@@ -1,4 +1,4 @@
-# Pro Camera (אנדרואיד)
+# Obscura: מצלמה מקצועית לאנדרואיד
 
 מצלמה לצלמים מקצועיים שמנצחת את המצלמה המובנית בעזרת צינור עיבוד RAW משלה:
 - פתיחה של מצבי חיישן ועדשות שהיצרן מסתיר, לפי פרופיל לכל מכשיר.
@@ -6,10 +6,35 @@
 - סימולציית פילם ספקטרלית.
 - תצוגה מקדימה שזהה לתוצאה.
 
-## סטטוס
-שלב 0, מחקר: [`docs/research/stage-0-research.md`](docs/research/stage-0-research.md)
+| ראשי | חיוג תריס | Looks | Sensor Intelligence |
+|---|---|---|---|
+| ![](app/src/test/snapshots/images/app.obscura.camera_ScreenSnapshotTest_main.png) | ![](app/src/test/snapshots/images/app.obscura.camera_ScreenSnapshotTest_shutterDial.png) | ![](app/src/test/snapshots/images/app.obscura.camera_ScreenSnapshotTest_looks.png) | ![](app/src/test/snapshots/images/app.obscura.camera_ScreenSnapshotTest_sensorPanel.png) |
 
-הצעד הבא הוא M0: אפליקציית CameraProbe, שממפה את היכולות של מכשירים אמיתיים.
+*צילומי המסך מרונדרים מהקומפוזבלים האמיתיים (Paparazzi), עם סצנה סינתטית במקום הזנת המצלמה.*
 
-## ידע לסוכנים
-[`.claude/skills/android-raw-camera/SKILL.md`](.claude/skills/android-raw-camera/SKILL.md)
+## מה עובד בגרסה 0.1
+- **Camera2 מלא:** תצוגה מקדימה, JPEG ו-DNG מהחיישן (DngCreator) לתיקייה `DCIM/Obscura`. אם הטלפון מסרב לשלב RAW ו-JPEG, האפליקציה מודיעה על כך ולא מוותרת בשקט.
+- **שליטה ידנית חיה:** תריס, ISO, EV, איזון לבן ופוקוס, בחוגות שמתנהגות כמו טבעת עדשה (קפיץ, נקישה רטטית לכל ערך). הערכים נלקחים ממה שהעדשה הפעילה תומכת בו.
+- **קריאות חיות:** מה שהחשיפה האוטומטית בחרה בפועל (A או M לכל שליטה), ו-EV₁₀₀.
+- **כלים:** היסטוגרמת RGB ובהירות עם אחוזי קליפינג, פלס אלקטרוני (פליז כשהוא ישר), רשת, Tap-to-focus/meter (לחיצה ארוכה מחזירה ל-AF-C), ותג מצב P/S/M בצירוף AF-C/AF-S/AF-L/MF.
+- **Natural:** כיבוי חידוד ו-NR מינימלי, רק איפה שה-HAL מאפשר.
+- **מעבר בין עדשות פיזיות אמיתיות,** כולל מזהים נסתרים (נקודת פליז).
+- **Sensor Intelligence (M0 / CameraProbe):** כל מזהי המצלמות, כולל נסתרים ופיזיים, יכולות, טווחים, מפתחות יצרן, רמת גישה L0-L2, וייצוא דוח JSON.
+- **Looks:** Ivory 400, Chroma 100, Slide 50, Tungsten 800 ו-Silver 400. רצים חי על ה-GPU (RenderEffect, אנדרואיד 12 ומעלה) ונצרבים ב-JPEG בלבד. ה-DNG לא נוגע בהם.
+
+## עוד לא קיים (בכנות)
+- מיזוג רצף (HDR+), מנוע פילם ספקטרלי ופרופילי פתיחה לכל יצרן (L2/L3): השלבים הבאים.
+- RAW בתת-מצלמה פיזית.
+- **לא נבדק עדיין על מכשיר אמיתי.** האפליקציה נבנתה ורונדרה רק בסביבת ענן.
+
+## בנייה
+```sh
+./gradlew :app:assembleDebug        # APK
+./gradlew :app:testDebugUnitTest    # לוגיקה + רגרסיית צילומי מסך
+./gradlew :app:recordPaparazziDebug # רענון צילומי המסך
+```
+דרישות: JDK 17 ומעלה ו-Android SDK 35. minSdk 29.
+
+## מסמכים
+- מחקר: [`docs/research/stage-0-research.md`](docs/research/stage-0-research.md)
+- ידע לסוכנים: [`.claude/skills/android-raw-camera/SKILL.md`](.claude/skills/android-raw-camera/SKILL.md)
