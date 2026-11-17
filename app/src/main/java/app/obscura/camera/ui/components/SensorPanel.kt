@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.obscura.camera.camera.CameraInfo
+import app.obscura.camera.camera.DeepProbe
 import app.obscura.camera.camera.ExposureMath
 import app.obscura.camera.camera.ProbeReport
 import app.obscura.camera.ui.CameraActions
@@ -45,7 +46,7 @@ private val LEVEL_TEXT = mapOf(
 )
 
 @Composable
-fun SensorPanel(report: ProbeReport?, activeCameraId: String?, a: CameraActions, modifier: Modifier = Modifier) {
+fun SensorPanel(report: ProbeReport?, hardware: DeepProbe.Summary?, activeCameraId: String?, a: CameraActions, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().background(Ob.Ink)) {
         LazyColumn(
             Modifier.fillMaxSize().statusBarsPadding(),
@@ -65,7 +66,11 @@ fun SensorPanel(report: ProbeReport?, activeCameraId: String?, a: CameraActions,
             }
             item { Summary(report) }
             item { Hairline() }
-            items(report.cameras, key = { it.id + it.physicalOnly }) { cam -> CameraCard(cam, cam.id == activeCameraId) }
+            item { HardwareBlock(hardware) }
+            item { Hairline() }
+            items(report.cameras, key = { it.id + it.physicalOnly }) { cam ->
+                CameraCard(cam, cam.id == activeCameraId, hardware?.extensions?.get(cam.id).orEmpty(), hardware?.controllableVendorKeys?.get(cam.id))
+            }
         }
         Row(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Ob.Ink).navigationBarsPadding()
@@ -102,6 +107,20 @@ private fun Summary(r: ProbeReport) {
 }
 
 @Composable
+private fun HardwareBlock(h: DeepProbe.Summary?) {
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Txt("HARDWARE", Ob.Label.copy(color = Ob.Ivory))
+        if (h == null) { Txt("Mapping processors, sensors and display…", Ob.Mono); return@Column }
+        h.rows.forEach { (k, v) ->
+            Row(Modifier.fillMaxWidth()) {
+                Txt(k, Ob.Label.copy(fontSize = 8.sp), Modifier.width(78.dp).padding(top = 2.dp))
+                Txt(v, Ob.Mono.copy(color = Ob.Ivory, fontSize = 11.sp), Modifier.weight(1f), maxLines = 2)
+            }
+        }
+    }
+}
+
+@Composable
 private fun Stat(label: String, value: String, modifier: Modifier, highlight: Boolean = false) {
     Column(modifier) {
         Txt(value, Ob.Value.copy(fontSize = 24.sp, color = if (highlight) Ob.Brass else Ob.Ivory))
@@ -115,7 +134,7 @@ private fun Hairline() = Box(Modifier.fillMaxWidth().height(0.6.dp).background(O
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CameraCard(c: CameraInfo, active: Boolean) {
+private fun CameraCard(c: CameraInfo, active: Boolean, extensions: List<String>, controllable: Int?) {
     var expanded by remember { mutableStateOf(false) }
     val facing = when (c.facing) { 0 -> "FRONT"; 1 -> "BACK"; 2 -> "EXTERNAL"; else -> "?" }
     Column(
@@ -160,9 +179,17 @@ private fun CameraCard(c: CameraInfo, active: Boolean) {
             Spacer(Modifier.height(8.dp))
             Txt("PHYSICAL  " + c.physicalIds.joinToString("  ·  "), Ob.Mono)
         }
+        if (extensions.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Txt("EXTENSIONS  " + extensions.joinToString("  ·  "), Ob.Mono.copy(color = Ob.Ivory))
+        }
+        if (c.vendorKeys.any { it.contains("vsdof") || it.contains("stereo") }) {
+            Spacer(Modifier.height(8.dp))
+            Txt("STEREO DEPTH ENGINE (VSDOF) EXPOSED", Ob.Mono.copy(color = Ob.Brass))
+        }
         Spacer(Modifier.height(8.dp))
         Txt(
-            "${c.vendorKeys.size} VENDOR KEYS  ·  ${c.totalKeys} TOTAL" + if (c.vendorKeys.isNotEmpty()) (if (expanded) "   ▲" else "   ▼") else "",
+            (controllable?.let { "$it CONTROLLABLE  ·  " } ?: "") + "${c.vendorKeys.size} VENDOR KEYS  ·  ${c.totalKeys} TOTAL" + if (c.vendorKeys.isNotEmpty()) (if (expanded) "   ▲" else "   ▼") else "",
             Ob.Mono.copy(color = if (c.vendorKeys.isNotEmpty()) Ob.Brass else Ob.Smoke),
         )
         if (expanded && c.vendorKeys.isNotEmpty()) {

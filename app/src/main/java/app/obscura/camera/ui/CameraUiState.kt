@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import app.obscura.camera.camera.CameraInfo
+import app.obscura.camera.camera.DeepProbe
 import app.obscura.camera.camera.Lens
 import app.obscura.camera.camera.LiveReadout
 import app.obscura.camera.camera.Look
@@ -27,6 +28,8 @@ class Histogram(
 data class CameraUiState(
     val hasPermission: Boolean = false,
     val report: ProbeReport? = null,
+    /** Probe v2 summary: hardware rows, extensions, controllable vendor keys. */
+    val hardware: DeepProbe.Summary? = null,
     val lenses: List<Lens> = emptyList(),
     val activeLensKey: String? = null,
     /** Characteristics of the active lens (the physical one when streaming a sub-camera). */

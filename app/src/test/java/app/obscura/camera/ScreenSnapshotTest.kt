@@ -48,18 +48,31 @@ class ScreenSnapshotTest {
         vendorKeys = (1..vendor).map { "com.vendor.camera.feature$it" }, totalKeys = 180 + vendor,
     )
 
+    // Camera layout as reported by a real Xiaomi 15T (probe v1); hardware rows are samples.
+    private val vsdofKeys = listOf("com.mediatek.stereofeature.supporteddoflevel", "com.mediatek.vsdoffeature.vsdofFeatureBokehShape",
+        "com.mediatek.vsdoffeature.vsdofFeatureSupportedDepthMapSizes")
     private val cameras = listOf(
-        cam("0", true, 24, 6.9f, raw = true, vendor = 46),
-        cam("2", true, 13, 2.2f, raw = true, vendor = 12),
-        cam("4", false, 72, 15f, raw = true, vendor = 31),
-        cam("5", false, 230, 24f, raw = false, physicalOnly = true),
-        cam("1", true, 22, 3.1f, raw = false).copy(facing = 0, hardwareLevel = "LEVEL_3"),
+        cam("0", true, 22, 5.35f, raw = true, vendor = 37).copy(physicalIds = listOf("2", "3", "4"), capabilities = cam("0", true, 22, 5.35f, true).capabilities + "LOGICAL_MULTI_CAMERA", hardwareLevel = "LEVEL_3"),
+        cam("1", true, 21, 2.58f, raw = true, vendor = 35).copy(facing = 0, hardwareLevel = "LEVEL_3", minFocusDiopters = 0f),
+        cam("2", false, 22, 5.35f, raw = true, vendor = 36).copy(hardwareLevel = "LEVEL_3"),
+        cam("3", false, 14, 1.91f, raw = true, vendor = 35).copy(hardwareLevel = "LEVEL_3", minFocusDiopters = 0f),
+        cam("4", false, 47, 7.1f, raw = true, vendor = 36).copy(hardwareLevel = "LEVEL_3", isoRange = 50..12800, minFocusDiopters = 2f),
+        cam("5", false, 22, 5.35f, raw = true, vendor = 38).copy(hardwareLevel = "LEVEL_3", physicalIds = listOf("2", "3", "4"),
+            vendorKeys = (1..38).map { "com.mediatek.feature$it" } + vsdofKeys),
     )
     private val lenses = listOf(
-        Lens("2", null, 13, false, true, ".6×"),
-        Lens("0", null, 24, false, true, "1×"),
-        Lens("4", null, 72, true, true, "3×"),
-        Lens("4", "5", 230, true, false, "10×"),
+        Lens("3", null, 14, true, true, ".6×"),
+        Lens("2", null, 22, true, true, "1×"),
+        Lens("4", null, 47, true, true, "2×"),
+    )
+    private val hardware = app.obscura.camera.camera.DeepProbe.Summary(
+        rows = listOf(
+            "SOC" to "Sample SoC", "GPU" to "Sample GPU", "VULKAN" to "1.3", "THERMAL" to "0.31 headroom",
+            "ADPF" to "performance hints available", "GYRO" to "500 Hz · sample gyroscope",
+            "HAPTICS" to "CLICK · TICK · LOW_TICK · QUICK_RISE", "DISPLAY" to "Wide gamut · HDR HDR10/HLG · 120 Hz",
+        ),
+        extensions = mapOf("0" to listOf("NIGHT", "HDR", "BOKEH")),
+        controllableVendorKeys = mapOf("0" to 41, "5" to 57),
     )
     private val report = ProbeReport(cameras, lenses)
 
@@ -75,7 +88,7 @@ class ScreenSnapshotTest {
     }
 
     private val base = CameraUiState(
-        hasPermission = true, report = report, lenses = lenses, activeLensKey = "0", activeInfo = cameras[0],
+        hasPermission = true, report = report, hardware = hardware, lenses = lenses, activeLensKey = "2", activeInfo = cameras[2],
         rawActive = true, jpegMp = 12.5f, rawMp = 12.5f,
         live = LiveReadout(iso = 160, shutterNs = ExposureMath.shutterNs(1, 250), focusDiopters = 0.35f, aperture = 1.8f, focalMm = 6.9f),
         histogram = HistogramMath.compute(scenePixels), rollDegrees = 0.2f,
@@ -119,7 +132,7 @@ class ScreenSnapshotTest {
     }
 
     @Test fun looks() = paparazzi.snapshot {
-        CameraScreen(base.copy(looksOpen = true, look = Looks.IVORY, activeLensKey = "4", activeInfo = cameras[2], rollDegrees = 4.5f), actions, scene)
+        CameraScreen(base.copy(looksOpen = true, look = Looks.IVORY, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f), actions, scene)
     }
 
     @Test fun sensorPanel() = paparazzi.snapshot { CameraScreen(base.copy(sensorOpen = true), actions, scene) }

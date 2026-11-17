@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.obscura.camera.camera.CameraController
+import app.obscura.camera.camera.DeepProbe
 import app.obscura.camera.camera.DeviceProbe
 import app.obscura.camera.camera.Lens
 import app.obscura.camera.camera.LiveReadout
@@ -47,6 +48,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     private var texture: SurfaceTexture? = null
     private var resumed = false
     private var messageJob: Job? = null
+    private var deepJson: org.json.JSONObject? = null
 
     // ---- Lifecycle wiring from the activity ----------------------------------------------------
 
@@ -77,6 +79,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         }
         if (first == null) notify("No usable back camera found")
         launch(Dispatchers.Main) { open() }
+        // Probe v2 runs after the camera is up: it reads every key value and maps the hardware.
+        runCatching { DeepProbe(getApplication()).run(report) }
+            .onSuccess { (json, summary) -> deepJson = json; _state.update { it.copy(hardware = summary) } }
     }
 
     private fun infoFor(r: ProbeReport?, lens: Lens?) =
@@ -174,7 +179,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         val report = _state.value.report ?: return
         viewModelScope.launch(Dispatchers.IO) {
             val ctx = getApplication<Application>()
-            val name = "obscura-probe-${android.os.Build.MODEL.replace(' ', '_')}-${System.currentTimeMillis()}.json"
+            val name = "obscura-probe-v2-${android.os.Build.MODEL.replace(' ', '_')}-${System.currentTimeMillis()}.json"
             val uri = runCatching {
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -182,7 +187,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                     put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Obscura")
                 }
                 val u = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("insert failed")
-                ctx.contentResolver.openOutputStream(u)?.use { it.write(report.toJson().toString(2).toByteArray()) }
+                val json = deepJson ?: runCatching { DeepProbe(ctx).run(report).first }.getOrElse { report.toJson() }
+                ctx.contentResolver.openOutputStream(u)?.use { it.write(json.toString(2).toByteArray()) }
                 u
             }.getOrNull()
             if (uri == null) notify("Could not write the report") else {

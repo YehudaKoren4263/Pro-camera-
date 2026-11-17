@@ -61,7 +61,7 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
             enter = fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 12 },
             exit = fadeOut(tween(180)) + slideOutVertically(tween(220)) { it / 12 },
         ) {
-            SensorPanel(s.report, s.activeLens?.cameraId, a)
+            SensorPanel(s.report, s.hardware, s.activeLens?.cameraId, a)
         }
 
         val msg = s.message
