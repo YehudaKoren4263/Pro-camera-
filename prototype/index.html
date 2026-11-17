@@ -1,0 +1,837 @@
+<title>Obscura Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500&family=Inter:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* Layout: one phone-sized camera body, centred on desktop, full-bleed on phones. Darkroom only, by design. */
+:root {
+  --ink: #09090a;
+  --graphite: #121214;
+  --coal: #1a1a1d;
+  --hair: rgba(237, 232, 223, 0.15);
+  --hair2: rgba(237, 232, 223, 0.3);
+  --ivory: #ede8df;
+  --ash: #9a958b;
+  --smoke: #5e5b55;
+  --brass: #c9a66b;
+  --brass-dim: rgba(201, 166, 107, 0.28);
+  --signal: #e5483a;
+  --scrim: rgba(9, 10, 10, 0.7);
+  --desk: #050506;
+  --f-display: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+  --f-ui: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-data: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--desk); color: var(--ivory); font-family: var(--f-ui);
+  display: flex; align-items: center; justify-content: center; gap: 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px; box-sizing: border-box; overflow: hidden;
+  -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 1px solid var(--brass); outline-offset: 2px; }
+
+.device {
+  position: relative; width: min(430px, 100%); height: min(932px, 100%);
+  background: var(--ink); border: 1px solid var(--hair); border-radius: 44px; overflow: hidden;
+  display: flex; flex-direction: column; box-shadow: 0 40px 120px rgba(0,0,0,.6);
+}
+@media (max-width: 520px) {
+  body { padding: 0; }
+  .device { width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; }
+}
+
+/* Type roles */
+.label { font: 500 9.5px/1 var(--f-ui); letter-spacing: .16em; text-transform: uppercase; color: var(--ash); }
+.mono { font: 400 10px/1.35 var(--f-data); letter-spacing: .02em; color: var(--ash); font-variant-numeric: tabular-nums; }
+.value { font: 300 19px/1 var(--f-ui); font-variant-numeric: tabular-nums lining-nums; color: var(--ivory); }
+
+/* Top bar */
+.top { padding: 14px 18px 0; display: grid; gap: 8px; flex: none; }
+.row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.wordmark { font: 500 17px/1 var(--f-display); letter-spacing: .32em; }
+.spacer { flex: 1; }
+.badge { display: flex; align-items: center; gap: 7px; border: 1px solid var(--brass-dim); border-radius: 99px; padding: 6px 11px; white-space: nowrap; }
+.badge .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--brass); }
+.badge .label { color: var(--brass); }
+.badge .sep { color: var(--ash); }
+.toggle { display: grid; justify-items: center; gap: 4px; padding: 4px 0; }
+.toggle .label { color: var(--smoke); transition: color .18s; }
+.toggle i { width: 10px; height: 1px; background: transparent; transition: background .18s; }
+.toggle[aria-pressed="true"] .label { color: var(--ivory); }
+.toggle[aria-pressed="true"] i { background: var(--brass); }
+.fmt { color: var(--ivory); opacity: .85; }
+
+/* Viewfinder */
+.vf-wrap { flex: 1 1 auto; min-height: 0; container-type: size; display: flex; justify-content: center; margin-top: 8px; }
+.vf {
+  position: relative; width: min(100cqw, 75cqh); aspect-ratio: 3 / 4; max-width: 100%;
+  background: var(--graphite); overflow: hidden; border-radius: 3px; cursor: crosshair; touch-action: none;
+}
+.vf canvas.scene { position: absolute; inset: 0; width: 100%; height: 100%; filter: url(#fx); }
+.grain { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: overlay; opacity: 0; background-size: 96px 96px; }
+.grid { position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(to right, transparent calc(33.33% - .5px), rgba(255,255,255,.2) calc(33.33% - .5px), rgba(255,255,255,.2) calc(33.33% + .5px), transparent calc(33.33% + .5px)),
+    linear-gradient(to right, transparent calc(66.66% - .5px), rgba(255,255,255,.2) calc(66.66% - .5px), rgba(255,255,255,.2) calc(66.66% + .5px), transparent calc(66.66% + .5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - .5px), rgba(255,255,255,.2) calc(33.33% - .5px), rgba(255,255,255,.2) calc(33.33% + .5px), transparent calc(33.33% + .5px)),
+    linear-gradient(to bottom, transparent calc(66.66% - .5px), rgba(255,255,255,.2) calc(66.66% - .5px), rgba(255,255,255,.2) calc(66.66% + .5px), transparent calc(66.66% + .5px));
+}
+.level { position: absolute; inset: 0; pointer-events: none; }
+.reticle { position: absolute; width: 68px; height: 68px; margin: -34px 0 0 -34px; pointer-events: none; transition: transform .26s cubic-bezier(.2,.8,.2,1), opacity .2s; }
+.reticle svg { width: 100%; height: 100%; overflow: visible; }
+.plate { position: absolute; background: var(--scrim); border-radius: 6px; padding: 6px 8px; pointer-events: none; }
+.mode { top: 10px; left: 10px; }
+.mode .label { color: var(--ivory); }
+.mode.manual .label { color: var(--brass); }
+.hist { top: 10px; right: 10px; display: grid; gap: 4px; }
+.hist canvas { width: 112px; height: 40px; display: block; }
+.hist .clip { display: flex; justify-content: space-between; }
+.hist .warn { color: var(--signal); }
+.lenses { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; background: var(--scrim); border-radius: 99px; }
+.lens { position: relative; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font: 400 12px/1 var(--f-ui); color: rgba(237,232,223,.8); transition: background .2s, color .2s; }
+.lens[aria-pressed="true"] { background: rgba(237,232,223,.12); color: var(--brass); }
+.lens.hidden-lens::after { content: ""; position: absolute; top: 6px; right: 7px; width: 3.5px; height: 3.5px; border-radius: 50%; background: var(--brass); }
+.flash { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+
+/* Context panel under the viewfinder */
+.context { height: 104px; flex: none; position: relative; overflow: hidden; }
+.context > * { position: absolute; inset: 10px 0 0; transition: opacity .2s, transform .26s cubic-bezier(.2,.8,.2,1); }
+.context > [data-off] { opacity: 0; transform: translateY(14px); pointer-events: none; }
+.info { display: grid; place-items: center; text-align: center; padding: 0 16px; }
+.dial-head { display: flex; align-items: center; gap: 10px; padding: 0 16px 4px; height: 26px; }
+.dial-head .label.name { color: var(--ivory); }
+.dial-head .cur { color: var(--brass); }
+.dial-head .reset { padding: 6px; }
+canvas.dial { width: 100%; height: 56px; display: block; touch-action: none; cursor: grab; }
+canvas.dial:active { cursor: grabbing; }
+.looks { display: flex; gap: 10px; overflow-x: auto; padding: 0 16px; scrollbar-width: none; }
+.looks::-webkit-scrollbar { display: none; }
+.look { flex: none; width: 104px; text-align: left; border: 1px solid var(--hair); border-radius: 8px; padding: 8px; display: grid; gap: 5px; align-content: start; transition: border-color .2s; }
+.look[aria-pressed="true"] { border-color: var(--brass); }
+.look .sw { display: flex; height: 18px; border-radius: 3px; overflow: hidden; }
+.look .sw i { flex: 1; }
+.look b { font: 400 12px/1.2 var(--f-ui); color: var(--ivory); }
+.look .mono { font-size: 8.5px; color: var(--smoke); line-height: 1.3; }
+
+/* Readout strip */
+.readouts { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0 8px; flex: none; }
+.cell { display: grid; justify-items: center; gap: 5px; padding: 8px 0; }
+.cell .head { display: flex; gap: 3px; align-items: baseline; }
+.cell .am { font: 500 8px/1 var(--f-ui); letter-spacing: .1em; color: var(--smoke); }
+.cell.m .am { color: var(--brass); }
+.cell .value { transition: color .2s; color: rgba(237,232,223,.8); white-space: nowrap; }
+.cell.m .value { color: var(--brass); }
+.cell[aria-pressed="true"] .value { color: var(--ivory); }
+.cell[aria-pressed="true"] .head .label { color: var(--ivory); }
+.cell u { display: block; height: 1px; width: 0; background: var(--brass); transition: width .22s; }
+.cell[aria-pressed="true"] u { width: 22px; }
+
+/* Bottom bar */
+.bottom { height: 96px; flex: none; display: flex; align-items: center; padding: 0 28px calc(env(safe-area-inset-bottom, 0px)); }
+.thumb { width: 48px; height: 48px; border-radius: 8px; border: 1px solid var(--hair2); background: var(--coal) center/cover no-repeat; position: relative; overflow: hidden; }
+.thumb .raw { position: absolute; left: 3px; bottom: 3px; font: 500 7px/1 var(--f-ui); letter-spacing: .08em; color: var(--ink); background: var(--brass); padding: 2px 3px; border-radius: 2px; }
+.shutter { width: 78px; height: 78px; border-radius: 50%; position: relative; display: grid; place-items: center; }
+.shutter::before { content: ""; position: absolute; inset: 1px; border-radius: 50%; border: 1.4px solid rgba(237,232,223,.9); }
+.shutter span { width: 64px; height: 64px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #f6f2ea, var(--ivory) 55%, #d9d3c8); transition: transform .11s; }
+.shutter:active span { transform: scale(.9); }
+.shutter.busy::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--brass); animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.lookbtn { width: 48px; display: grid; justify-items: center; gap: 5px; }
+.lookbtn .disc { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--hair2); padding: 4px; box-sizing: border-box; }
+.lookbtn .disc div { width: 100%; height: 100%; border-radius: 50%; overflow: hidden; display: flex; }
+.lookbtn .disc i { flex: 1; }
+.lookbtn.on .disc { border-color: var(--brass); }
+.lookbtn .label { font-size: 8px; }
+.lookbtn.on .label { color: var(--brass); }
+
+/* Overlays */
+.sheet { position: absolute; inset: 0; background: var(--ink); z-index: 20; display: flex; flex-direction: column; transition: opacity .22s, transform .32s cubic-bezier(.2,.8,.2,1); }
+.sheet[data-off] { opacity: 0; transform: translateY(24px); pointer-events: none; }
+.sheet-head { display: flex; align-items: center; padding: 22px 18px 10px; }
+.sheet-head .label { color: var(--ivory); letter-spacing: .24em; }
+.sheet-body { flex: 1; overflow-y: auto; padding: 4px 16px 24px; display: grid; gap: 14px; align-content: start; }
+.sheet-foot { display: flex; align-items: center; gap: 12px; padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--hair); }
+.pill { font: 500 9.5px/1 var(--f-ui); letter-spacing: .16em; text-transform: uppercase; color: var(--ink); background: var(--ivory); border-radius: 99px; padding: 11px 16px; white-space: nowrap; }
+.big { display: flex; align-items: flex-end; gap: 14px; }
+.big strong { font: 200 56px/0.9 var(--f-ui); color: var(--brass); }
+.big p { margin: 0 0 6px; font: 400 12px/1.45 var(--f-ui); color: var(--ash); max-width: 30ch; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; padding-bottom: 14px; border-bottom: 1px solid var(--hair); }
+.stats div { display: grid; gap: 4px; }
+.stats b { font: 300 24px/1 var(--f-ui); font-variant-numeric: tabular-nums; }
+.stats .hl b { color: var(--brass); }
+.cam { border: 1px solid var(--hair); border-radius: 10px; padding: 14px; display: grid; gap: 10px; text-align: left; width: 100%; box-sizing: border-box; }
+.cam.active { border-color: var(--brass-dim); }
+.cam-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cam-head .value { font-size: 17px; margin-right: 4px; }
+.tag { font: 500 8.5px/1 var(--f-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--ash); border: 1px solid var(--hair); border-radius: 4px; padding: 4px 6px; }
+.tag.b { color: var(--brass); border-color: var(--brass-dim); }
+.specs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 6px; }
+.specs div { display: grid; gap: 3px; min-width: 0; }
+.specs .label { font-size: 8px; }
+.specs .mono { color: var(--ivory); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caps { display: flex; flex-wrap: wrap; gap: 5px; }
+.vk { color: var(--brass); }
+.keys { display: grid; gap: 2px; }
+.note { border: 1px dashed var(--hair2); border-radius: 8px; padding: 10px 12px; font: 400 11px/1.45 var(--f-ui); color: var(--ash); }
+.shot { width: 100%; aspect-ratio: 3/4; border-radius: 4px; display: block; background: var(--coal); }
+.meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 8px; }
+.meta div { display: grid; gap: 4px; min-width: 0; }
+.meta .mono { color: var(--ivory); font-size: 11.5px; }
+.files { display: grid; gap: 6px; }
+.files div { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid var(--hair); padding-top: 8px; }
+
+.toast { position: absolute; top: 86px; left: 16px; right: 16px; z-index: 30; display: flex; align-items: center; gap: 10px; background: var(--coal); border: 1px solid var(--hair); border-radius: 8px; padding: 10px 14px; font: 400 12px/1.4 var(--f-ui); transition: opacity .2s, transform .26s; }
+.toast[data-off] { opacity: 0; transform: translateY(-10px); pointer-events: none; }
+.toast i { width: 5px; height: 5px; border-radius: 50%; background: var(--brass); flex: none; }
+
+/* Desk notes (desktop only) */
+.notes { max-width: 300px; display: grid; gap: 18px; direction: rtl; text-align: right; }
+.notes h1 { margin: 0; font: 500 30px/1.1 var(--f-display); letter-spacing: .08em; color: var(--ivory); direction: ltr; text-align: right; }
+.notes p { margin: 0; font: 400 13px/1.6 var(--f-ui); color: var(--ash); }
+.notes ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.notes li { font: 400 13px/1.5 var(--f-ui); color: var(--ivory); border-right: 1px solid var(--brass-dim); padding-right: 12px; }
+.notes li span { display: block; color: var(--ash); font-size: 12px; }
+.notes kbd { font: 400 11px/1 var(--f-data); color: var(--brass); border: 1px solid var(--hair); border-radius: 4px; padding: 2px 5px; }
+@media (max-width: 900px) { .notes { display: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <filter id="fx" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%">
+    <feConvolveMatrix id="sharp" order="3" kernelMatrix="0 0 0 0 1 0 0 0 0" preserveAlpha="true" edgeMode="duplicate"/>
+    <feColorMatrix id="cm" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0"/>
+  </filter>
+</svg>
+
+<main class="device" id="device" aria-label="Obscura camera prototype">
+  <header class="top">
+    <div class="row">
+      <span class="wordmark">OBSCURA</span>
+      <span class="spacer"></span>
+      <button class="badge" id="badge" aria-label="Open sensor intelligence">
+        <span class="dot"></span><span class="label">Sensor L2</span><span class="label sep">· 5 cam ·</span><span class="label">1 hidden</span>
+      </button>
+    </div>
+    <div class="row">
+      <button class="toggle" data-t="raw" aria-pressed="true"><span class="label">RAW + JPEG</span><i></i></button>
+      <span class="mono fmt" id="mp">12.5 MP</span>
+      <span class="spacer"></span>
+      <button class="toggle" data-t="natural" aria-pressed="true"><span class="label">Natural</span><i></i></button>
+      <button class="toggle" data-t="grid" aria-pressed="true"><span class="label">Grid</span><i></i></button>
+      <button class="toggle" data-t="level" aria-pressed="true"><span class="label">Level</span><i></i></button>
+      <button class="toggle" data-t="hist" aria-pressed="true"><span class="label">Hist</span><i></i></button>
+    </div>
+  </header>
+
+  <div class="vf-wrap">
+    <div class="vf" id="vf" role="img" aria-label="Viewfinder. Tap to focus, long-press to return to continuous autofocus.">
+      <canvas class="scene" id="scene"></canvas>
+      <div class="grain" id="grain"></div>
+      <div class="grid" id="gridEl"></div>
+      <svg class="level" id="levelEl" viewBox="0 0 300 400" preserveAspectRatio="none">
+        <line x1="62" y1="200" x2="70" y2="200" stroke="rgba(255,255,255,.35)" stroke-width="1"/>
+        <line x1="230" y1="200" x2="238" y2="200" stroke="rgba(255,255,255,.35)" stroke-width="1"/>
+        <g id="levelArm">
+          <line x1="76" y1="200" x2="132" y2="200" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="168" y1="200" x2="224" y2="200" stroke-width="1.2" stroke-linecap="round"/>
+          <circle cx="150" cy="200" r="1.6"/>
+        </g>
+      </svg>
+      <div class="reticle" id="reticle" style="opacity:0">
+        <svg viewBox="0 0 68 68"><g id="retG" fill="none" stroke-width="1.2" stroke-linecap="round">
+          <path d="M0 9V0h9M59 0h9v9M68 59v9h-9M9 68H0v-9"/></g><circle id="retDot" cx="34" cy="34" r="1.5"/></svg>
+      </div>
+      <div class="plate mode" id="mode"><span class="label" id="modeText">P &nbsp; AF-C</span></div>
+      <div class="plate hist" id="histEl">
+        <canvas id="histC" width="224" height="80"></canvas>
+        <div class="clip mono"><span>SH <span id="clipLo">0%</span></span><span>HL <span id="clipHi">0%</span></span></div>
+      </div>
+      <div class="lenses" id="lenses"></div>
+      <div class="flash" id="flash"></div>
+    </div>
+  </div>
+
+  <section class="context" aria-live="polite">
+    <div class="info mono" id="info"></div>
+    <div id="dialBox" data-off>
+      <div class="dial-head"><span class="label name" id="dialName">SHUTTER</span><span class="mono cur" id="dialCur"></span><span class="spacer"></span><button class="label reset" id="dialReset">Reset</button></div>
+      <canvas class="dial" id="dial" tabindex="0" aria-label="Value dial. Drag, or use arrow keys."></canvas>
+    </div>
+    <div class="looks" id="looks" data-off></div>
+  </section>
+
+  <nav class="readouts" id="readouts" aria-label="Exposure controls"></nav>
+
+  <footer class="bottom">
+    <button class="thumb" id="thumb" aria-label="Open last photo"></button>
+    <span class="spacer"></span>
+    <button class="shutter" id="shutter" aria-label="Take photo"><span></span></button>
+    <span class="spacer"></span>
+    <button class="lookbtn" id="lookBtn" aria-label="Choose a look"><span class="disc"><div id="lookDisc"></div></span><span class="label" id="lookLabel">Look</span></button>
+  </footer>
+
+  <section class="sheet" id="sensor" data-off aria-label="Sensor intelligence">
+    <div class="sheet-head"><span class="label">Sensor intelligence</span><span class="spacer"></span><button class="label" data-close="sensor" style="padding:8px">Close</button></div>
+    <div class="sheet-body" id="sensorBody"></div>
+    <div class="sheet-foot"><span class="mono" style="flex:1;color:var(--smoke)">Sample report. On a phone, Obscura probes the real sensor.</span><button class="pill" id="exportBtn">Export JSON</button></div>
+  </section>
+
+  <section class="sheet" id="review" data-off aria-label="Last photo">
+    <div class="sheet-head"><span class="label">Last frame</span><span class="spacer"></span><button class="label" data-close="review" style="padding:8px">Close</button></div>
+    <div class="sheet-body" id="reviewBody"></div>
+  </section>
+
+  <div class="toast" id="toast" data-off role="status"><i></i><span id="toastText"></span></div>
+</main>
+
+<aside class="notes">
+  <h1>OBSCURA</h1>
+  <p>אב טיפוס אינטראקטיבי של ממשק המצלמה. החשיפה, הפוקוס, איזון הלבן וה-Looks מדומים על סצנה ממוחשבת לפי מתמטיקת חשיפה אמיתית.</p>
+  <ul>
+    <li>הקש על ערך למטה<span>Shutter, ISO, EV, WB, Focus פותחים חוגה. גרור אותה כמו טבעת עדשה.</span></li>
+    <li>הקש על התמונה<span>מיקוד ומדידה בנקודה. הדשא קרוב, ההרים באינסוף. לחיצה ארוכה מחזירה ל-AF-C.</span></li>
+    <li>כבה את Natural<span>רואים את הילות החידוד של מצלמת המערכת.</span></li>
+    <li>חשיפה ידנית<span>קבע גם Shutter וגם ISO. התמונה תתבהר או תיחשך באמת, וההיסטוגרמה תראה קליפינג.</span></li>
+    <li>מקלדת<span><kbd>Space</kbd> צילום · <kbd>← →</kbd> חוגה · <kbd>Esc</kbd> סגירה</span></li>
+  </ul>
+</aside>
+
+<script>
+(() => {
+"use strict";
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const log2 = Math.log2;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ---------------------------------------------------------------- Data
+const ISO = [50,64,80,100,125,160,200,250,320,400,500,640,800,1000,1250,1600,2000,2500,3200,4000,5000,6400];
+const SH = [[30,1],[25,1],[20,1],[15,1],[13,1],[10,1],[8,1],[6,1],[5,1],[4,1],[3,1],[5,2],[2,1],[8,5],[13,10],[1,1],[4,5],[3,5],[1,2],[2,5],[1,3],[1,4],[1,5],[1,6],[1,8],[1,10],[1,13],[1,15],[1,20],[1,25],[1,30],[1,40],[1,50],[1,60],[1,80],[1,100],[1,125],[1,160],[1,200],[1,250],[1,320],[1,400],[1,500],[1,640],[1,800],[1,1000],[1,1250],[1,1600],[1,2000],[1,2500],[1,3200],[1,4000],[1,5000],[1,6400],[1,8000]];
+const SHV = SH.map(([n, d]) => n / d);
+const DENS = SH.filter(([n]) => n === 1).map(([, d]) => d);
+const EV_STEPS = Array.from({ length: 25 }, (_, i) => i - 12); // thirds, −4..+4
+const WB = [["AUTO", null], ["2800K", 2800], ["3200K", 3200], ["4000K", 4000], ["5000K", 5000], ["5500K", 5500], ["6500K", 6500], ["7500K", 7500]];
+const FOCUS = Array.from({ length: 49 }, (_, i) => i * 10 / 48); // diopters, ∞ .. 10 cm
+
+const LENSES = [
+  { key: "2", label: ".6×", eq: 13, f: 2.2, focal: 2.2, hidden: false, raw: true },
+  { key: "0", label: "1×", eq: 24, f: 1.8, focal: 6.9, hidden: false, raw: true },
+  { key: "4", label: "3×", eq: 72, f: 2.8, focal: 15, hidden: true, raw: true },
+  { key: "4/5", label: "10×", eq: 230, f: 3.4, focal: 24, hidden: true, raw: false },
+];
+
+const sat = (s) => { const r = .2126 * (1 - s), g = .7152 * (1 - s), b = .0722 * (1 - s); return [r+s,g,b,0,0, r,g+s,b,0,0, r,g,b+s,0,0, 0,0,0,1,0]; };
+const tone = (r, g, b, lift, c) => { const o = lift + 128 * (1 - c); return [r*c,0,0,0,o, 0,g*c,0,0,o, 0,0,b*c,0,o, 0,0,0,1,0]; };
+const cat = (a, b) => { const o = new Array(20).fill(0);
+  for (let r = 0; r < 4; r++) { for (let c = 0; c < 4; c++) { let v = 0; for (let k = 0; k < 4; k++) v += a[r*5+k] * b[k*5+c]; o[r*5+c] = v; }
+    let t = a[r*5+4]; for (let k = 0; k < 4; k++) t += a[r*5+k] * b[k*5+4]; o[r*5+4] = t; } return o; };
+const LOOKS = [
+  { id: "neutral", name: "Neutral", note: "Sensor truth. No look.", m: tone(1,1,1,0,1), sw: ["#8e897f","#b9b3a8","#ede8df"] },
+  { id: "ivory", name: "Ivory 400", note: "Warm skin, soft shoulder, lifted blacks.", m: cat(tone(1.06,1,.92,10,.9), sat(.86)), sw: ["#d9b28c","#e8cfb0","#9db0a6"] },
+  { id: "chroma", name: "Chroma 100", note: "Dense colour, punchy mids.", m: cat(tone(1.02,1,1,-4,1.12), sat(1.32)), sw: ["#c8402e","#2f6fa8","#e3b23c"] },
+  { id: "slide", name: "Slide 50", note: "Deep shadows, saturated reversal.", m: cat(tone(.98,1.02,1.04,-10,1.2), sat(1.45)), sw: ["#1f5f8b","#2e8a57","#b8322a"] },
+  { id: "tungsten", name: "Tungsten 800", note: "Cool night balance, cinematic.", m: cat(tone(.9,.98,1.12,6,1.05), sat(.95)), sw: ["#2b4c6f","#4f8fa0","#e07a4f"] },
+  { id: "silver", name: "Silver 400", note: "Panchromatic black and white.", m: cat(tone(1,1,1,-6,1.18), sat(0)), sw: ["#1c1c1c","#7a7a7a","#e6e6e6"] },
+];
+
+const CONTROLS = ["SHUTTER", "ISO", "EV", "WB", "FOCUS"];
+
+// ---------------------------------------------------------------- State
+const S = {
+  lens: "0", look: "neutral", control: null, looksOpen: false,
+  iso: null, sh: null, ev: 0, wb: 0, focus: null,
+  t: { raw: true, natural: true, grid: true, level: true, hist: true },
+  focusPoint: null, afTarget: 0.02, afLocked: false,
+  live: { iso: 50, sh: 1/1600, focus: 0.02, gain: 1 },
+  last: null, busy: false,
+};
+const lens = () => LENSES.find((l) => l.key === S.lens);
+
+// ---------------------------------------------------------------- Formatting
+function fmtSh(t) {
+  if (t >= 0.95) { const w = Math.round(t); return Math.abs(t - w) < 0.05 ? w + "″" : t.toFixed(1) + "″"; }
+  if (t >= 0.38) return t.toFixed(1) + "″";
+  const d = 1 / t; let best = DENS[0];
+  for (const x of DENS) if (Math.abs(x - d) / d < Math.abs(best - d) / d) best = x;
+  return Math.abs(best - d) / d < 0.12 ? "1/" + best : "1/" + Math.round(d);
+}
+function fmtEv(steps) {
+  if (steps === 0) return "±0";
+  const s = steps > 0 ? "+" : "−", a = Math.abs(steps), w = Math.floor(a / 3), f = a % 3;
+  return s + (w || "") + (f === 1 ? "⅓" : f === 2 ? "⅔" : "") || s + "0";
+}
+function fmtFocus(d) {
+  if (d == null) return "AF";
+  if (d <= 0.01) return "∞";
+  const m = 1 / d;
+  return m < 1 ? Math.round(m * 100) + "cm" : m < 10 ? m.toFixed(1) + "m" : Math.round(m) + "m";
+}
+
+// ---------------------------------------------------------------- Exposure model
+let sceneEV = 12.3;
+function exposure() {
+  const L = lens(), N2 = L.f * L.f;
+  const target = sceneEV - S.ev / 3;
+  let iso = S.iso, t = S.sh;
+  const manual = iso != null && t != null;
+  if (iso == null && t == null) {
+    iso = 50; t = N2 / Math.pow(2, target + log2(iso / 100));
+    if (t > 1 / 30) { t = 1 / 30; iso = clamp(100 * Math.pow(2, log2(N2 / t) - target), 50, 6400); }
+    t = clamp(t, 1 / 8000, 1 / 30);
+  } else if (iso == null) {
+    iso = clamp(100 * Math.pow(2, log2(N2 / t) - target), 50, 6400);
+  } else if (t == null) {
+    t = clamp(N2 / Math.pow(2, target + log2(iso / 100)), 1 / 8000, 30);
+  }
+  const evSet = log2(N2 / t) - log2(iso / 100);
+  const gain = Math.pow(2, sceneEV - evSet);
+  return { iso, t, gain, manual, ev100: log2(N2 / t) - log2(iso / 100) };
+}
+
+function wbGains() {
+  const k = WB[S.wb][1] ?? 5200; // AWB keeps a little of the golden hour
+  const f = log2(k / 5500);
+  return [Math.pow(2, 0.42 * f), 1, Math.pow(2, -0.42 * f)];
+}
+
+function finalMatrix() {
+  const L = LOOKS.find((l) => l.id === S.look).m, g = S.live.gain, w = wbGains();
+  const d = [g * w[0], g * w[1], g * w[2], 1];
+  const m = L.slice();
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) m[r * 5 + c] = L[r * 5 + c] * d[c];
+  return m;
+}
+
+// ---------------------------------------------------------------- Scene (procedural, sharp at every zoom)
+const scene = $("scene"), sctx = scene.getContext("2d");
+let rng = 7;
+const rand = () => ((rng = (rng * 16807) % 2147483647) / 2147483647);
+const BLADES = Array.from({ length: 150 }, () => ({ x: rand() * 1000, h: 140 + rand() * 230, bend: (rand() - .5) * 90, w: 1.6 + rand() * 3.2, head: rand() < .28 }));
+const CLOUDS = Array.from({ length: 7 }, () => ({ x: rand() * 1300 - 150, y: 140 + rand() * 330, w: 160 + rand() * 260, h: 18 + rand() * 26, a: .05 + rand() * .09, v: 2 + rand() * 4 }));
+
+function ridge(ctx, base, amp, seed, color) {
+  ctx.beginPath(); ctx.moveTo(-100, 1400);
+  for (let i = 0; i <= 60; i++) {
+    const x = -100 + i * 20;
+    const y = base - amp * (0.55 * Math.sin(i * .37 + seed) + 0.3 * Math.sin(i * 1.13 + seed * 2) + 0.15 * Math.sin(i * 2.9 + seed));
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(1100, 1400); ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+}
+
+function drawScene(time) {
+  const r = scene.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+  if (!W || !H) return;
+  if (scene.width !== W || scene.height !== H) { scene.width = W; scene.height = H; }
+  const L = lens(), zoom = L.eq / 13, cx = 640, cy = 770;
+  const sc = W / (1000 / zoom);
+  const tf = () => sctx.setTransform(sc, 0, 0, sc, W / 2 - cx * sc, H / 2 - cy * sc);
+  const focusD = S.live.focus;
+  const blurK = 5 * dpr * Math.pow(L.eq / 24, 0.85);
+  const blur = (dist) => Math.min(22 * dpr, Math.abs(focusD - dist) * blurK);
+
+  sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.filter = "none"; sctx.clearRect(0, 0, W, H);
+  // Far layer: sky, sun, clouds, distant range (∞).
+  sctx.filter = `blur(${blur(0)}px)`; tf();
+  const sky = sctx.createLinearGradient(0, -300, 0, 900);
+  sky.addColorStop(0, "#0f1522"); sky.addColorStop(.42, "#3b3a4a"); sky.addColorStop(.7, "#9b6f63"); sky.addColorStop(.86, "#e6a46d"); sky.addColorStop(1, "#f3c58c");
+  sctx.fillStyle = sky; sctx.fillRect(-400, -400, 1800, 1400);
+  const glow = sctx.createRadialGradient(690, 742, 0, 690, 742, 340);
+  glow.addColorStop(0, "rgba(255,240,214,1)"); glow.addColorStop(.08, "rgba(255,226,180,.95)"); glow.addColorStop(.35, "rgba(250,180,120,.35)"); glow.addColorStop(1, "rgba(250,160,110,0)");
+  sctx.fillStyle = glow; sctx.fillRect(300, 380, 800, 760);
+  for (const c of CLOUDS) {
+    const x = ((c.x + time * c.v * 0.01) % 1400) - 200;
+    sctx.fillStyle = `rgba(255,214,178,${c.a})`;
+    sctx.beginPath(); sctx.ellipse(x, c.y, c.w, c.h, 0, 0, Math.PI * 2); sctx.fill();
+  }
+  ridge(sctx, 745, 70, 1.3, "#2a2730");
+  ridge(sctx, 772, 46, 4.1, "#1c1b21");
+  // Mid layer: hills and lake (~60 m).
+  sctx.filter = `blur(${blur(0.016)}px)`; tf();
+  ridge(sctx, 826, 34, 2.2, "#121215");
+  const lake = sctx.createLinearGradient(0, 838, 0, 980);
+  lake.addColorStop(0, "#c88a62"); lake.addColorStop(.25, "#6b4c48"); lake.addColorStop(1, "#141418");
+  sctx.fillStyle = lake; sctx.fillRect(-400, 838, 1800, 160);
+  sctx.fillStyle = "rgba(255,226,180,.55)"; sctx.fillRect(672, 840, 36, 3); sctx.fillRect(660, 852, 60, 2); sctx.fillRect(676, 866, 28, 2); sctx.fillRect(650, 884, 76, 1.5);
+  ridge(sctx, 990, 18, 5.3, "#0d0d10");
+  sctx.fillStyle = "#0d0d10"; sctx.fillRect(-400, 990, 1800, 500);
+  // Near layer: grass at 0.6 m.
+  sctx.filter = `blur(${blur(1.65)}px)`; tf();
+  sctx.strokeStyle = "#060607"; sctx.fillStyle = "#060607"; sctx.lineCap = "round";
+  for (const b of BLADES) {
+    const sway = Math.sin(time * 0.0011 + b.x) * 6;
+    sctx.lineWidth = b.w; sctx.beginPath(); sctx.moveTo(b.x, 1360);
+    sctx.quadraticCurveTo(b.x + b.bend * .4, 1360 - b.h * .6, b.x + b.bend + sway, 1360 - b.h); sctx.stroke();
+    if (b.head) { sctx.beginPath(); sctx.ellipse(b.x + b.bend + sway, 1360 - b.h - 10, 4, 13, b.bend * .004, 0, Math.PI * 2); sctx.fill(); }
+  }
+  sctx.filter = "none"; sctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+// ---------------------------------------------------------------- Histogram (from the processed pixels)
+const hc = document.createElement("canvas"); hc.width = 60; hc.height = 80;
+const hctx = hc.getContext("2d", { willReadFrequently: true });
+const histC = $("histC"), histX = histC.getContext("2d");
+function pixelsProcessed(w, h, src) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(src, 0, 0, w, h);
+  const img = x.getImageData(0, 0, w, h), p = img.data, m = finalMatrix(), sharp = !S.t.natural;
+  for (let i = 0; i < p.length; i += 4) {
+    const r = p[i], g = p[i + 1], b = p[i + 2];
+    p[i] = clamp(m[0]*r + m[1]*g + m[2]*b + m[4], 0, 255);
+    p[i + 1] = clamp(m[5]*r + m[6]*g + m[7]*b + m[9], 0, 255);
+    p[i + 2] = clamp(m[10]*r + m[11]*g + m[12]*b + m[14], 0, 255);
+  }
+  if (sharp) { /* the stock-phone look: crude unsharp on output */
+    const o = new Uint8ClampedArray(p);
+    for (let y = 1; y < h - 1; y++) for (let x2 = 1; x2 < w - 1; x2++) for (let ch = 0; ch < 3; ch++) {
+      const i = (y * w + x2) * 4 + ch;
+      p[i] = 5 * o[i] - o[i - 4] - o[i + 4] - o[i - w * 4] - o[i + w * 4];
+    }
+  }
+  x.putImageData(img, 0, 0);
+  return { canvas: c, data: p };
+}
+function updateHistogram() {
+  if (!S.t.hist) return;
+  hctx.drawImage(scene, 0, 0, hc.width, hc.height);
+  const p = hctx.getImageData(0, 0, hc.width, hc.height).data, m = finalMatrix();
+  const B = 64, Ls = new Float32Array(B), R = new Float32Array(B), G = new Float32Array(B), Bl = new Float32Array(B);
+  let hi = 0, lo = 0; const n = p.length / 4;
+  for (let i = 0; i < p.length; i += 4) {
+    const r0 = p[i], g0 = p[i + 1], b0 = p[i + 2];
+    const r = clamp(m[0]*r0 + m[1]*g0 + m[2]*b0 + m[4], 0, 255), g = clamp(m[5]*r0 + m[6]*g0 + m[7]*b0 + m[9], 0, 255), b = clamp(m[10]*r0 + m[11]*g0 + m[12]*b0 + m[14], 0, 255);
+    const y = .2126 * r + .7152 * g + .0722 * b;
+    Ls[(y * B / 256) | 0]++; R[(r * B / 256) | 0]++; G[(g * B / 256) | 0]++; Bl[(b * B / 256) | 0]++;
+    if (Math.max(r, g, b) >= 252) hi++; if (y <= 3) lo++;
+  }
+  const peak = Math.sqrt(Math.max(...Ls, ...R, ...G, ...Bl, 1));
+  const W = histC.width, H = histC.height; histX.clearRect(0, 0, W, H);
+  const path = (a) => { histX.beginPath(); histX.moveTo(0, H); a.forEach((v, i) => histX.lineTo(i * W / (B - 1), H - Math.sqrt(v) / peak * H)); histX.lineTo(W, H); histX.closePath(); };
+  path(Ls); histX.fillStyle = "rgba(237,232,223,.28)"; histX.fill();
+  histX.lineWidth = 1.6;
+  [[R, "rgba(224,100,90,.8)"], [G, "rgba(127,192,138,.8)"], [Bl, "rgba(108,155,224,.8)"]].forEach(([a, c]) => { path(a); histX.strokeStyle = c; histX.stroke(); });
+  const fh = hi / n, fl = lo / n;
+  if (fl > .005) { histX.fillStyle = "#e5483a"; histX.fillRect(0, 0, 4, H); }
+  if (fh > .005) { histX.fillStyle = "#e5483a"; histX.fillRect(W - 4, 0, 4, H); }
+  const pct = (v) => v < .001 ? "0%" : (Math.round(v * 1000) / 10) + "%";
+  $("clipLo").textContent = pct(fl); $("clipLo").className = fl > .005 ? "warn" : "";
+  $("clipHi").textContent = pct(fh); $("clipHi").className = fh > .005 ? "warn" : "";
+}
+
+// ---------------------------------------------------------------- Grain (visible noise at high ISO)
+(() => { const c = document.createElement("canvas"); c.width = c.height = 192; const g = c.getContext("2d"), d = g.createImageData(192, 192);
+  for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (Math.random() + Math.random() + Math.random() - 1.5) * 110; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+  g.putImageData(d, 0, 0); $("grain").style.backgroundImage = `url(${c.toDataURL()})`; })();
+
+// ---------------------------------------------------------------- UI rendering
+function applyFilter() {
+  const m = finalMatrix().map((v, i) => (i % 5 === 4 ? v / 255 : v));
+  $("cm").setAttribute("values", m.map((v) => +v.toFixed(4)).join(" "));
+  $("sharp").setAttribute("kernelMatrix", S.t.natural ? "0 0 0 0 1 0 0 0 0" : "0 -1 0 -1 5 -1 0 -1 0");
+  $("grain").style.opacity = clamp((log2(S.live.iso / 200)) * 0.045, 0, 0.22).toFixed(3);
+}
+
+function readout(c) {
+  const e = S.live;
+  switch (c) {
+    case "SHUTTER": return [fmtSh(S.sh ?? e.sh), S.sh == null];
+    case "ISO": return [String(Math.round(S.iso ?? e.iso)), S.iso == null];
+    case "EV": return [fmtEv(S.ev), S.ev === 0];
+    case "WB": return [S.wb === 0 ? "AWB" : WB[S.wb][0], S.wb === 0];
+    case "FOCUS": return [S.focus == null ? fmtFocus(e.focus) : fmtFocus(S.focus), S.focus == null];
+  }
+}
+
+function dialModel(c) {
+  const manual = S.iso != null && S.sh != null;
+  switch (c) {
+    case "SHUTTER": return { opts: ["AUTO", ...SH.map(([n, d]) => fmtSh(n / d))], sel: S.sh == null ? 0 : SHV.indexOf(S.sh) + 1 };
+    case "ISO": return { opts: ["AUTO", ...ISO.map(String)], sel: S.iso == null ? 0 : ISO.indexOf(S.iso) + 1 };
+    case "EV": return { opts: EV_STEPS.map(fmtEv), sel: S.ev + 12, disabled: manual, note: manual ? "Exposure is manual" : null };
+    case "WB": return { opts: WB.map((w) => w[0]), sel: S.wb };
+    case "FOCUS": return { opts: ["AF", ...FOCUS.map(fmtFocus)], sel: S.focus == null ? 0 : FOCUS.indexOf(S.focus) + 1 };
+  }
+}
+function dialApply(c, i) {
+  switch (c) {
+    case "SHUTTER": S.sh = i === 0 ? null : SHV[i - 1]; break;
+    case "ISO": S.iso = i === 0 ? null : ISO[i - 1]; break;
+    case "EV": S.ev = i - 12; break;
+    case "WB": S.wb = i; break;
+    case "FOCUS": S.focus = i === 0 ? null : FOCUS[i - 1]; if (S.focus != null) { S.focusPoint = null; } break;
+  }
+}
+
+const cells = {};
+CONTROLS.forEach((c) => {
+  const b = document.createElement("button");
+  b.className = "cell"; b.setAttribute("aria-pressed", "false");
+  b.innerHTML = `<span class="head"><span class="label">${c}</span><span class="am">A</span></span><span class="value"></span><u></u>`;
+  b.onclick = () => { S.control = S.control === c ? null : c; S.looksOpen = false; render(); dial.sync(true); };
+  $("readouts").appendChild(b); cells[c] = b;
+});
+
+LENSES.forEach((l) => {
+  const b = document.createElement("button");
+  b.className = "lens" + (l.hidden ? " hidden-lens" : ""); b.textContent = l.label; b.dataset.key = l.key;
+  b.setAttribute("aria-label", `${l.eq} mm lens${l.hidden ? ", hidden from the stock camera list" : ""}`);
+  b.onclick = (ev) => { ev.stopPropagation(); if (S.lens === l.key) return; S.lens = l.key; S.iso = S.sh = S.focus = null; S.focusPoint = null; vibrate(8);
+    if (!l.raw && S.t.raw) toast("RAW is not available on this sub-camera yet. Shooting JPEG."); render(); dial.sync(true); };
+  $("lenses").appendChild(b);
+});
+
+LOOKS.forEach((l) => {
+  const b = document.createElement("button");
+  b.className = "look"; b.dataset.id = l.id;
+  b.innerHTML = `<span class="sw">${l.sw.map((c) => `<i style="background:${c}"></i>`).join("")}</span><b>${l.name}</b><span class="mono">${l.note}</span>`;
+  b.onclick = () => { S.look = l.id; render(); };
+  $("looks").appendChild(b);
+});
+
+document.querySelectorAll(".toggle").forEach((t) => t.onclick = () => {
+  const k = t.dataset.t; S.t[k] = !S.t[k]; render();
+  if (k === "natural") toast(S.t.natural ? "Natural: sharpening off, minimal noise reduction." : "Device processing: watch the halos on the ridge line.");
+});
+
+function render() {
+  const L = lens(), e = S.live;
+  // toggles
+  document.querySelectorAll(".toggle").forEach((t) => t.setAttribute("aria-pressed", String(S.t[t.dataset.t])));
+  document.querySelector('.toggle[data-t="raw"] .label').textContent = S.t.raw ? (L.raw ? "RAW + JPEG" : "JPEG · no RAW") : "JPEG";
+  $("mp").textContent = (S.t.raw && L.raw ? "12.5" : "12.2") + " MP";
+  $("gridEl").hidden = !S.t.grid; $("levelEl").style.display = S.t.level ? "" : "none"; $("histEl").hidden = !S.t.hist;
+  // lenses
+  document.querySelectorAll(".lens").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.key === S.lens)));
+  // readouts
+  CONTROLS.forEach((c) => { const [v, auto] = readout(c); const b = cells[c];
+    b.querySelector(".value").textContent = v; b.querySelector(".am").textContent = auto ? "A" : "M";
+    b.classList.toggle("m", !auto); b.setAttribute("aria-pressed", String(S.control === c)); });
+  // mode tag
+  const mode = S.iso != null && S.sh != null ? "M" : S.sh != null ? "S" : S.iso != null ? "ISO" : "P";
+  const af = S.focus != null ? "MF" : S.focusPoint ? (S.afLocked ? "AF-L" : "AF-S") : "AF-C";
+  $("modeText").innerHTML = `${mode} &nbsp; ${af}`; $("mode").classList.toggle("manual", mode !== "P");
+  // context panel
+  const panel = S.control ? "dial" : S.looksOpen ? "looks" : "info";
+  $("info").toggleAttribute("data-off", panel !== "info");
+  $("dialBox").toggleAttribute("data-off", panel !== "dial");
+  $("looks").toggleAttribute("data-off", panel !== "looks");
+  if (S.control) { const m = dialModel(S.control); $("dialName").textContent = S.control; $("dialCur").textContent = m.note || m.opts[m.sel]; $("dialCur").style.color = m.note ? "var(--ash)" : ""; }
+  const look = LOOKS.find((l) => l.id === S.look);
+  document.querySelectorAll(".look").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === S.look)));
+  $("lookDisc").innerHTML = look.sw.map((c) => `<i style="background:${c}"></i>`).join("");
+  $("lookBtn").classList.toggle("on", S.looksOpen || S.look !== "neutral");
+  $("lookLabel").textContent = S.look === "neutral" ? "Look" : look.name.split(" ")[0];
+  const parts = [`${L.eq}mm eq.`, `ƒ${L.f.toFixed(1)}`, `${L.focal.toFixed(2)}mm`, `EV₁₀₀ ${e.ev100 != null ? e.ev100.toFixed(1) : "—"}`, L.key === "4/5" ? "PHYSICAL 5" : "FULL"];
+  if (S.look !== "neutral") parts.push(look.name.toUpperCase());
+  $("info").textContent = parts.join("    ");
+  // reticle
+  const ret = $("reticle");
+  if (S.focusPoint) {
+    ret.style.left = S.focusPoint[0] * 100 + "%"; ret.style.top = S.focusPoint[1] * 100 + "%"; ret.style.opacity = 1;
+    const col = S.afLocked ? "#c9a66b" : "#ede8df"; $("retG").setAttribute("stroke", col); $("retDot").setAttribute("fill", col);
+  } else ret.style.opacity = 0;
+  applyFilter();
+}
+
+// ---------------------------------------------------------------- Dial (lens-ring ruler)
+const dial = (() => {
+  const cv = $("dial"), ctx = cv.getContext("2d");
+  let off = 0, vel = 0, target = 0, dragging = false, lastX = 0, lastIdx = 0, raf = 0;
+  const SP = 16;
+  const model = () => (S.control ? dialModel(S.control) : { opts: [], sel: 0 });
+  const idxAt = (o, n) => clamp(Math.round(-o / SP), 0, Math.max(0, n - 1));
+  function draw() {
+    const r = cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
+    const W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+    if (cv.width !== W) cv.width = W; if (cv.height !== H) cv.height = H;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
+    const m = model(), cx = r.width / 2, top = 6, on = !m.disabled;
+    ctx.font = "400 9.5px 'JetBrains Mono', ui-monospace, monospace"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+    m.opts.forEach((lab, i) => {
+      const x = cx + off + i * SP; if (x < -48 || x > r.width + 48) return;
+      const near = 1 - clamp(Math.abs(x - cx) / cx, 0, 1), major = i % 3 === 0;
+      ctx.strokeStyle = on ? `rgba(237,232,223,${.25 + .5 * near})` : "rgba(94,91,85,.6)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x + .5, top); ctx.lineTo(x + .5, top + (major ? 13 : 7)); ctx.stroke();
+      if (major) { ctx.fillStyle = on ? `rgba(237,232,223,${.35 + .45 * near})` : "rgba(94,91,85,.7)"; ctx.fillText(lab, x, top + 18); }
+    });
+    ctx.strokeStyle = "#c9a66b"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, top + 18); ctx.stroke();
+    ctx.fillStyle = "#c9a66b"; ctx.beginPath(); ctx.arc(cx, 1, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalCompositeOperation = "destination-in";
+    const g = ctx.createLinearGradient(0, 0, r.width, 0);
+    g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(.2, "#000"); g.addColorStop(.8, "#000"); g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, r.width, r.height); ctx.globalCompositeOperation = "source-over";
+  }
+  function animate() {
+    cancelAnimationFrame(raf);
+    const step = () => {
+      if (reduced) { off = target; draw(); return; }
+      const f = (target - off) * 0.16; vel = vel * 0.62 + f; off += vel; draw();
+      if (Math.abs(target - off) > 0.2 || Math.abs(vel) > 0.2) raf = requestAnimationFrame(step); else { off = target; draw(); }
+    };
+    raf = requestAnimationFrame(step);
+  }
+  function select(i) {
+    if (!S.control) return; const m = model();
+    if (m.disabled || i === lastIdx) return;
+    lastIdx = i; vibrate(4); dialApply(S.control, i); tick(true); render();
+  }
+  function sync(jump) { const m = model(); lastIdx = m.sel; target = -m.sel * SP; if (jump) { off = target; vel = 0; } draw(); animate(); }
+  cv.addEventListener("pointerdown", (e) => { if (model().disabled) return; dragging = true; lastX = e.clientX; cv.setPointerCapture(e.pointerId); cancelAnimationFrame(raf); });
+  cv.addEventListener("pointermove", (e) => {
+    if (!dragging) return; const m = model();
+    off = clamp(off + (e.clientX - lastX), -(m.opts.length - 1) * SP, 0); lastX = e.clientX; draw();
+    select(idxAt(off, m.opts.length));
+  });
+  const end = (e) => {
+    if (!dragging) return; dragging = false; const m = model();
+    if (Math.abs(e.clientX - (cv.getBoundingClientRect().left + cv.getBoundingClientRect().width / 2)) < 0 ) return;
+    const i = idxAt(off, m.opts.length); select(i); target = -i * SP; vel = 0; animate();
+  };
+  cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+  cv.addEventListener("keydown", (e) => {
+    if (!S.control) return; const m = model();
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); select(clamp(lastIdx + (e.key === "ArrowRight" ? 1 : -1), 0, m.opts.length - 1)); target = -lastIdx * SP; animate(); }
+  });
+  addEventListener("resize", draw);
+  return { sync, draw, step: (d) => { if (!S.control) return; const m = model(); select(clamp(lastIdx + d, 0, m.opts.length - 1)); target = -lastIdx * SP; animate(); } };
+})();
+$("dialReset").onclick = () => {
+  if (!S.control) return;
+  ({ SHUTTER: () => (S.sh = null), ISO: () => (S.iso = null), EV: () => (S.ev = 0), WB: () => (S.wb = 0), FOCUS: () => (S.focus = null) })[S.control]();
+  tick(true); render(); dial.sync(false);
+};
+
+// ---------------------------------------------------------------- Viewfinder gestures
+let pressTimer = 0, longPressed = false;
+$("vf").addEventListener("pointerdown", (e) => {
+  if (e.target.closest(".lenses")) return;
+  longPressed = false;
+  pressTimer = setTimeout(() => { longPressed = true; S.focusPoint = null; S.afLocked = false; S.afTarget = 0.02; vibrate(10); toast("Continuous autofocus"); render(); }, 520);
+});
+$("vf").addEventListener("pointerup", (e) => {
+  clearTimeout(pressTimer);
+  if (longPressed || e.target.closest(".lenses")) return;
+  const r = $("vf").getBoundingClientRect(), nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+  S.focusPoint = [nx, ny]; S.focus = null; S.afLocked = false; S.control = null; S.looksOpen = false;
+  // What sits under the finger: grass near the bottom edge, the lake, or the far range.
+  S.afTarget = ny > 0.78 ? 1.65 : ny > 0.6 ? 0.016 : 0;
+  render(); setTimeout(() => { S.afLocked = true; vibrate(6); render(); }, 380);
+});
+$("vf").addEventListener("pointerleave", () => clearTimeout(pressTimer));
+
+// ---------------------------------------------------------------- Shutter, review, sensor
+function shoot() {
+  if (S.busy) return; S.busy = true; $("shutter").classList.add("busy"); vibrate(14);
+  const fl = $("flash"); fl.style.transition = "none"; fl.style.opacity = .85; requestAnimationFrame(() => { fl.style.transition = "opacity .18s"; fl.style.opacity = 0; });
+  const L = lens(), e = S.live, look = LOOKS.find((l) => l.id === S.look);
+  setTimeout(() => {
+    const big = pixelsProcessed(360, 480, scene).canvas;
+    const now = new Date(), pad = (n) => String(n).padStart(2, "0");
+    const name = `OBS_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    S.last = { url: big.toDataURL("image/jpeg", 0.88), name, raw: S.t.raw && L.raw, lens: L, iso: Math.round(e.iso), sh: e.sh, ev: S.ev, wb: S.wb, look: look.name, af: S.focus != null ? "MF " + fmtFocus(S.focus) : S.focusPoint ? "AF-S" : "AF-C", natural: S.t.natural, ev100: e.ev100 };
+    $("thumb").style.backgroundImage = `url(${S.last.url})`;
+    $("thumb").innerHTML = S.last.raw ? '<span class="raw">RAW</span>' : "";
+    S.busy = false; $("shutter").classList.remove("busy");
+    toast(`Saved ${name}.jpg${S.last.raw ? " + .dng" : ""} to DCIM/Obscura`);
+  }, 420);
+}
+$("shutter").onclick = shoot;
+$("thumb").onclick = () => {
+  const s = S.last; if (!s) { toast("No photos yet. Press the shutter."); return; }
+  $("reviewBody").innerHTML = `
+    <img class="shot" src="${s.url}" alt="Last frame">
+    <div class="meta">
+      ${[["Shutter", fmtSh(s.sh)], ["ISO", s.iso], ["EV comp", fmtEv(s.ev)], ["Lens", `${s.lens.eq}mm · ƒ${s.lens.f}`], ["WB", s.wb === 0 ? "AWB" : WB[s.wb][0]], ["Focus", s.af], ["Look", s.look], ["Processing", s.natural ? "Natural" : "Device"], ["EV₁₀₀", s.ev100.toFixed(1)]]
+        .map(([k, v]) => `<div><span class="label">${k}</span><span class="mono">${v}</span></div>`).join("")}
+    </div>
+    <div class="files">
+      <div><span class="mono" style="color:var(--ivory)">${s.name}.jpg</span><span class="mono">4080×3072 · ${s.look === "Neutral" ? "camera JPEG" : "look baked in"}</span></div>
+      ${s.raw ? `<div><span class="mono" style="color:var(--brass)">${s.name}.dng</span><span class="mono">RAW16 · sensor data, untouched</span></div>` : `<div><span class="mono">No DNG</span><span class="mono">RAW unavailable on this lens</span></div>`}
+    </div>`;
+  open("review");
+};
+
+const CAMS = [
+  { id: "0", st: "LISTED", eq: 24, focal: "6.90mm", ap: "ƒ1.8", raw: "12.5MP", iso: "50–6400", sh: "1/8000–30″", cf: "10cm", vk: 46, total: 226, active: true },
+  { id: "2", st: "LISTED", eq: 13, focal: "2.20mm", ap: "ƒ2.2", raw: "12.5MP", iso: "50–3200", sh: "1/8000–10″", cf: "4cm", vk: 12, total: 192 },
+  { id: "4", st: "HIDDEN", eq: 72, focal: "15.00mm", ap: "ƒ2.8", raw: "12.5MP", iso: "50–6400", sh: "1/8000–30″", cf: "35cm", vk: 31, total: 211 },
+  { id: "5", st: "PHYSICAL", eq: 230, focal: "24.00mm", ap: "ƒ3.4", raw: "—", iso: "100–3200", sh: "1/4000–1″", cf: "1.2m", vk: 0, total: 164 },
+  { id: "1", st: "LISTED", eq: 22, focal: "3.10mm", ap: "ƒ2.4", raw: "—", iso: "50–3200", sh: "1/4000–1″", cf: "fixed", vk: 3, total: 151, front: true },
+];
+$("sensorBody").innerHTML = `
+  <div class="big"><strong>L2</strong><p>Vendor keys exposed. Device-specific unlocks are possible with a profile.</p></div>
+  <div class="stats">
+    <div><b>3</b><span class="label">Listed</span></div><div class="hl"><b>1</b><span class="label">Hidden</span></div>
+    <div><b>1</b><span class="label">Physical</span></div><div><b>3</b><span class="label">RAW</span></div><div><b>4</b><span class="label">Lenses</span></div>
+  </div>
+  <div class="note">L0 is public Camera2 only. L1 reaches hidden ids and physical lenses. L2 finds vendor keys, which per-device profiles can use to unlock full sensor modes.</div>
+  ${CAMS.map((c) => `
+    <div class="cam${c.active ? " active" : ""}">
+      <div class="cam-head"><span class="value">ID ${c.id}</span><span class="tag${c.st === "HIDDEN" ? " b" : ""}">${c.st}</span><span class="tag">${c.front ? "FRONT" : "BACK"}</span><span class="tag">${c.front ? "LEVEL_3" : "FULL"}</span></div>
+      <div class="specs">
+        ${[["Equiv", c.eq + "mm"], ["Focal", c.focal], ["Aperture", c.ap], ["RAW", c.raw], ["ISO", c.iso], ["Shutter", c.sh], ["Close focus", c.cf], ["Keys", c.total]].map(([k, v]) => `<div><span class="label">${k}</span><span class="mono">${v}</span></div>`).join("")}
+      </div>
+      <div class="caps">${["MANUAL SENSOR", "MANUAL POST PROCESSING", ...(c.raw !== "—" ? ["RAW"] : []), "BURST CAPTURE", "READ SENSOR SETTINGS"].map((t) => `<span class="tag">${t}</span>`).join("")}</div>
+      <span class="mono ${c.vk ? "vk" : ""}">${c.vk} vendor keys · ${c.total} total</span>
+    </div>`).join("")}`;
+$("badge").onclick = () => open("sensor");
+$("exportBtn").onclick = () => toast("On a phone this saves the report to Download/Obscura and opens the share sheet.");
+document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => close(b.dataset.close)));
+function open(id) { $(id).removeAttribute("data-off"); }
+function close(id) { $(id).setAttribute("data-off", ""); }
+
+$("lookBtn").onclick = () => { S.looksOpen = !S.looksOpen; S.control = null; render(); };
+
+// ---------------------------------------------------------------- Feedback
+function vibrate(ms) { try { navigator.vibrate && navigator.vibrate(ms); } catch (_) {} }
+let toastT = 0;
+function toast(t) { $("toastText").textContent = t; $("toast").removeAttribute("data-off"); clearTimeout(toastT); toastT = setTimeout(() => $("toast").setAttribute("data-off", ""), 3200); }
+$("toast").onclick = () => $("toast").setAttribute("data-off", "");
+
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { close("sensor"); close("review"); S.control = null; S.looksOpen = false; render(); }
+  else if (e.key === " " && document.activeElement.tagName !== "BUTTON") { e.preventDefault(); shoot(); }
+  else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && S.control && document.activeElement !== $("dial")) { e.preventDefault(); dial.step(e.key === "ArrowRight" ? 1 : -1); }
+});
+
+// ---------------------------------------------------------------- Live loop
+let roll = 0;
+function tick(force) {
+  const e = exposure();
+  S.live.iso = e.iso; S.live.sh = e.t; S.live.gain = e.gain; S.live.ev100 = e.ev100;
+  const want = S.focus != null ? S.focus : S.afTarget;
+  S.live.focus += (want - S.live.focus) * (force ? 1 : 0.22);
+  if (Math.abs(want - S.live.focus) < 0.002) S.live.focus = want;
+}
+let lastScene = 0, lastHist = 0, lastUi = 0;
+function loop(now) {
+  sceneEV = 12.3 + 0.28 * Math.sin(now / 5200) + 0.08 * Math.sin(now / 1300);
+  tick(false);
+  if (now - lastScene > 70) { drawScene(now); lastScene = now; }
+  if (now - lastHist > 160) { updateHistogram(); lastHist = now; }
+  if (now - lastUi > 120) {
+    lastUi = now; applyFilter();
+    CONTROLS.forEach((c) => { const [v] = readout(c); const el = cells[c].querySelector(".value"); if (el.textContent !== v) el.textContent = v; });
+    const L = lens(); const parts = $("info").textContent.split("    "); parts[3] = `EV₁₀₀ ${S.live.ev100.toFixed(1)}`; $("info").textContent = parts.join("    ");
+  }
+  roll = 2.2 * Math.sin(now / 2600) + 0.6 * Math.sin(now / 900);
+  if (S.t.level) {
+    const lv = Math.abs(roll) < 0.5, arm = $("levelArm");
+    arm.setAttribute("transform", `rotate(${(-roll).toFixed(2)} 150 200)`);
+    arm.setAttribute("stroke", lv ? "#c9a66b" : "rgba(255,255,255,.7)"); arm.setAttribute("fill", lv ? "#c9a66b" : "rgba(255,255,255,.7)");
+  }
+  requestAnimationFrame(loop);
+}
+tick(true); render(); drawScene(0); dial.sync(true);
+requestAnimationFrame(loop);
+})();
+</script>
