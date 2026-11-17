@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,9 +19,27 @@ android {
         versionName = "0.1.0"
     }
 
+    // Release signing is read from keystore.properties (never committed). Point OBSCURA_KEYSTORE
+    // at it, or place it in the project root. Without it, release builds are left unsigned.
+    val keystoreFile = System.getenv("OBSCURA_KEYSTORE")?.let { file(it) } ?: rootProject.file("keystore.properties")
+    val signing = keystoreFile.takeIf { it.exists() }?.let { f -> Properties().apply { f.inputStream().use(::load) } }
+    if (signing != null) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (signing != null) signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
