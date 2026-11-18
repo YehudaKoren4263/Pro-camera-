@@ -30,7 +30,6 @@ enum class Mode(val title: String, val time: Boolean, val durations: List<Long>,
     PANNING("פאנינג", true, listOf(250, 500, 1000), 500),
     TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000, BULB, AUTO), AUTO),
     CLEAN("הסרת אנשים", true, listOf(3000, 6000, 10000), 6000),
-    SUPER("סופר-רזולוציה", true, emptyList(), 0),
     DOUBLE("חשיפה כפולה", true, emptyList(), 0),
 }
 
@@ -67,6 +66,8 @@ data class CameraUiState(
     val level: Boolean = true,
     val histogramOn: Boolean = true,
     val natural: Boolean = true,
+    /** Photo: 8 RAW frames merged to 50 MP (true) or one RAW frame at sensor size. */
+    val hiRes: Boolean = true,
     val histogram: Histogram? = null,
     val rollDegrees: Float = 0f,
     val lastShot: ImageBitmap? = null,
@@ -110,6 +111,7 @@ interface CameraActions {
     fun dial(control: Control, index: Int) {}
     fun resetControl(control: Control) {}
     fun toggleFormat() {}
+    fun toggleHiRes() {}
     fun toggleGrid() {}
     fun toggleLevel() {}
     fun toggleHistogram() {}

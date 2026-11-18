@@ -96,17 +96,22 @@ fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
             AccessBadge(s, Modifier.press(a::toggleSensor))
         }
         Row(Modifier.fillMaxWidth().height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+            val ownRaw = s.rawActive && !s.mode.time
             val format = when {
                 s.mode.time -> "JPEG"
-                s.format == OutputFormat.JPEG -> "JPEG"
-                s.rawActive -> "RAW + JPEG"
-                s.rawRefused -> "RAW נדחה"
-                else -> "JPEG · בלי RAW"
+                !ownRaw -> if (s.rawRefused) "RAW נדחה" else "JPEG · בלי RAW"
+                s.format == OutputFormat.RAW_JPEG -> "DNG + JPEG"
+                else -> "JPEG"
             }
-            Toggle(format, s.rawActive && !s.mode.time, onClick = a::toggleFormat)
+            Toggle(format, ownRaw && s.format == OutputFormat.RAW_JPEG, onClick = a::toggleFormat)
             Txt("  ·  ", Ob.Mono.copy(color = Ob.Smoke))
-            Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", if (s.rawActive && !s.mode.time) s.rawMp else s.jpegMp)),
-                Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
+            if (ownRaw) {
+                // Our own RAW development: 50 MP from a burst, or one frame at sensor size.
+                val mp = if (s.hiRes) s.rawMp * 4 else s.rawMp
+                Toggle(ltr(String.format(java.util.Locale.US, "%.0f MP", mp)), s.hiRes, onClick = a::toggleHiRes)
+            } else {
+                Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", s.jpegMp)), Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
+            }
             Spacer(Modifier.weight(1f))
             Toggle("טבעי", s.natural, onClick = a::toggleNatural)
             Spacer(Modifier.width(14.dp))
@@ -293,7 +298,6 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                             Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
                             Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, ומה שזז לא משאיר רוח רפאים."
                             Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר בתמונה ייעלם."
-                            Mode.SUPER -> "שמונה פריימים ביד, בלי חצובה: רעידות היד יוצרות פרטים חדשים. התוצאה פי 4 פיקסלים."
                             else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד."
                         },
                         Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2, modifier = Modifier.weight(1f),

@@ -25,6 +25,7 @@ import app.obscura.camera.time.Roi
 import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
 import app.obscura.camera.time.YuvFrame
+import app.obscura.camera.camera.RawDevelop
 import app.obscura.camera.time.YuvImages
 import app.obscura.camera.time.AutoStop
 import app.obscura.camera.time.SuperResolution
@@ -112,7 +113,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         val lens = s.activeLens ?: return
         controller.look = s.look
         controller.update(s.settings, s.natural)
-        controller.open(lens, t, s.format == OutputFormat.RAW_JPEG, time = s.mode.time)
+        // RAW is always streamed for photos: we develop it ourselves. The format toggle only
+        // decides whether the DNG is also kept.
+        controller.open(lens, t, true, time = s.mode.time)
     }
 
     override fun onCleared() { controller.release() }
@@ -176,14 +179,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         if (reopen) open()
         notify(
             when (mode) {
-                Mode.PHOTO -> "צילום רגיל · RAW + JPEG"
+                Mode.PHOTO -> if (_state.value.hiRes) "צילום · 50MP מ-8 פריימי RAW, צבע שלנו" else "צילום · RAW אחד, צבע שלנו"
                 Mode.LONG -> "חשיפה ארוכה · עדיף להישען או להניח על משהו יציב"
                 Mode.PANNING -> "פאנינג · הקש על הנושא ועקוב אחריו בתנועה"
                 Mode.TRAILS -> "עקבות אור · מתאים ללילה, לכבישים ולכוכבים"
                 Mode.NIGHT -> "לילה · רצף פריימים שמתמזג בלי רוחות רפאים של תנועה"
                 Mode.CLEAN -> "הסרת אנשים · עמוד יציב, מי שעובר ייעלם"
                 Mode.DOUBLE -> "חשיפה כפולה · צלם את הפריים הראשון"
-                Mode.SUPER -> "סופר-רזולוציה · ביד, בלי חצובה: רעידות היד יוצרות את הפרטים"
             },
         )
     }
@@ -220,7 +222,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun toggleFormat() {
         if (_state.value.mode.time) { notify("במצבי זמן התוצאה נשמרת כ-JPEG"); return }
         _state.update { it.copy(format = if (it.format == OutputFormat.RAW_JPEG) OutputFormat.JPEG else OutputFormat.RAW_JPEG) }
-        open()
+        notify(if (_state.value.format == OutputFormat.RAW_JPEG) "יישמר גם קובץ DNG" else "JPEG בלבד")
+    }
+
+    override fun toggleHiRes() {
+        _state.update { it.copy(hiRes = !it.hiRes) }
+        notify(if (_state.value.hiRes) "50MP · 8 פריימים ממוזגים, פחות רעש" else "12.6MP · פריים אחד, מהיר")
     }
 
     override fun toggleGrid() = _state.update { it.copy(grid = !it.grid) }
@@ -247,9 +254,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         }
         if (s.activeLens == null) return
         when (s.mode) {
-            Mode.PHOTO -> { _state.update { it.copy(capturing = true) }; controller.capture() }
+            Mode.PHOTO -> if (controller.canDevelopRaw) shootRaw(s) else {
+                // No RAW on this lens: the camera's own JPEG, said plainly.
+                _state.update { it.copy(capturing = true) }; controller.capture()
+                if (!s.mode.time) notify("אין RAW בעדשה הזו: צבעי המכשיר")
+            }
             Mode.DOUBLE -> shootDouble()
-            Mode.SUPER -> shootSuper(s)
             else -> recordTime(s)
         }
     }
@@ -257,39 +267,46 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     @Volatile private var openEnded = false
 
     /**
-     * Super-resolution: eight frames over ~0.7 s, kept in memory, then aligned to sub-pixel
-     * precision and splatted onto a 2x grid (12.6 MP -> 50 MP on the 15T).
+     * The photo: RAW frames developed by us (no maker colour, tone or sharpening), then for
+     * 50 MP merged with sub-pixel super-resolution. Hand shake between frames is the detail.
      */
-    private fun shootSuper(s: CameraUiState) {
-        val frames = ArrayList<YuvFrame>(8)
-        var firstTs = -1L; var nextSlot = 0
-        val window = 700L; val slots = 8
-        _state.update { it.copy(capturing = true, busyText = "אוסף פריימים") }
-        controller.record(window, sink = { f ->
-            if (firstTs < 0) firstTs = f.timestampNs
-            val idx = (((f.timestampNs - firstTs) / 1_000_000L) * slots / window).toInt()
-            if (idx >= nextSlot && frames.size < slots) { frames += f; nextSlot = idx + 1 }
-        }) { stats ->
-            if (frames.size < 3) {
-                _state.update { it.copy(capturing = false, busyText = null) }
-                notify("נקלטו רק ${frames.size} פריימים. נסה שוב.")
-                return@record
+    private fun shootRaw(s: CameraUiState) {
+        val n = if (s.hiRes) 8 else 1
+        val crop = controller.zoomRatio
+        val sr = if (n > 1) SuperResolution(2) else null
+        var single: YuvFrame? = null
+        var oom = false
+        _state.update { it.copy(capturing = true, busyText = if (n > 1) "אוסף 8 פריימי RAW" else "מפתח RAW", progress = 0f) }
+        controller.rawBurst(n, keepFirst = s.format == OutputFormat.RAW_JPEG, sink = { raw, meta, i ->
+            if (!oom) try {
+                val f = RawDevelop.develop(raw, meta, RawDevelop.centerCrop(raw.w, raw.h, crop))
+                if (sr != null) sr.add(f) else single = f
+                _state.update { it.copy(busyText = if (n > 1) "מפתח RAW ${i + 1}/$n" else "מפתח RAW", progress = (i + 1f) / (n * 2f)) }
+            } catch (e: OutOfMemoryError) { oom = true; sr?.clear() }
+        }) { stats, saveDng ->
+            val name = "OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date())
+            val dng = if (s.format == OutputFormat.RAW_JPEG) saveDng(name) else null
+            val look = _state.value.look
+            val count = sr?.count ?: if (single != null) 1 else 0
+            if (oom || count == 0) {
+                sr?.clear()
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify(if (oom) "אין מספיק זיכרון ל-50MP. נסה 12MP." else "לא התקבלו פריימי RAW")
+                return@rawBurst
             }
             try {
-                _state.update { it.copy(busyText = "מיישר ${frames.size} פריימים") }
-                val sr = SuperResolution(2)
-                frames.forEach(sr::add); frames.clear()
-                _state.update { it.copy(busyText = "מרכיב 50MP", progress = 0f) }
-                val out = sr.result { p -> _state.update { it.copy(progress = p) } }
-                val n = sr.count; sr.clear()
-                val look = _state.value.look
-                saveComputed("סופר-רזולוציה", "Obscura super-resolution · ${n} frames · ${out.w}x${out.h}") {
+                val out = if (sr != null) {
+                    _state.update { it.copy(busyText = "מרכיב 50MP") }
+                    sr.result { p -> _state.update { it.copy(progress = 0.5f + p / 2f) } }.also { sr.clear() }
+                } else single!!
+                single = null
+                saveComputed(if (sr != null) "צילום 50MP" else "צילום", "Obscura RAW · own colour · $count frames · ${out.w}x${out.h}", dng, name) {
                     YuvImages.toBitmap(out, stats.orientation, look)
                 }
             } catch (e: OutOfMemoryError) {
-                frames.clear()
+                sr?.clear()
                 _state.update { it.copy(capturing = false, busyText = null, progress = null) }
-                notify("אין מספיק זיכרון לסופר-רזולוציה.")
+                notify("אין מספיק זיכרון ל-50MP. נסה 12MP.")
             }
         }
     }
@@ -531,17 +548,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     /** Renders, saves and publishes a computed image. Never leaves the shutter busy. */
-    private fun saveComputed(label: String, description: String, render: () -> Bitmap) {
+    private fun saveComputed(label: String, description: String, dng: Uri? = null, fileName: String? = null, render: () -> Bitmap) {
         try {
             val bmp = render()
-            val name = "OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date())
+            val name = fileName ?: ("OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date()))
             // The look was applied while rendering; the saver only records its name.
             val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description, lookApplied = true)
             val thumb = Bitmap.createScaledBitmap(bmp, (bmp.width / 16).coerceAtLeast(1), (bmp.height / 16).coerceAtLeast(1), true)
             bmp.recycle()
             _state.update {
                 it.copy(capturing = false, busyText = null, progress = null, livePreview = null,
-                    lastShot = thumb.asImageBitmap(), lastShotUri = uri ?: it.lastShotUri, lastShotHasRaw = false)
+                    lastShot = thumb.asImageBitmap(), lastShotUri = uri ?: it.lastShotUri, lastShotHasRaw = dng != null)
             }
             notify(if (uri != null) "$label נשמר" else "השמירה נכשלה")
         } catch (e: OutOfMemoryError) {

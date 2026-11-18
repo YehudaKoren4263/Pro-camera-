@@ -42,6 +42,22 @@ object MediaSaver {
         return uri
     }
 
+    /** DNG from a frame we already copied out of the camera (RAW burst). */
+    fun saveDngFrame(
+        context: Context, characteristics: CameraCharacteristics, result: TotalCaptureResult,
+        frame: RawFrame, orientationDegrees: Int, name: String,
+    ): Uri? {
+        val uri = insert(context, "$name.dng", "image/x-adobe-dng") ?: return null
+        val buf = java.nio.ByteBuffer.allocateDirect(frame.w * frame.h * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        buf.asShortBuffer().put(frame.data)
+        DngCreator(characteristics, result).use { dng ->
+            dng.setOrientation(exifOrientation(orientationDegrees))
+            context.contentResolver.openOutputStream(uri)?.use { dng.writeByteBuffer(it, android.util.Size(frame.w, frame.h), buf, 0) }
+        }
+        publish(context, uri)
+        return uri
+    }
+
     /**
      * Saves a computed image (time modes, double exposure): look applied, JPEG at quality 95,
      * EXIF records what made it. The bitmap must already be upright.

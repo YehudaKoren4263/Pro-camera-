@@ -164,8 +164,6 @@ class ScreenSnapshotTest {
         shot(base.copy(mode = Mode.DOUBLE, jpegMp = 4.9f, rawActive = false, doubleGhost = bmp.asImageBitmap(), blend = Blend.SCREEN))
     }
 
-    @Test fun superResolution() = shot(base.copy(mode = Mode.SUPER, jpegMp = 12.6f, rawActive = false))
-
     @Test fun zoomWheel() = shot(base.copy(zoom = 3.5f, zoomOpen = true))
 
     @Test fun bulbRecording() = shot(

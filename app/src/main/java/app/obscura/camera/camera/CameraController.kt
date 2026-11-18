@@ -86,7 +86,11 @@ class CameraController(private val context: Context, private val listener: Liste
     private var lastAutoExposure: Long? = null
     private var lastReadoutAt = 0L
     private var pending: PendingShot? = null
-    private var zoomRatio = 1f
+    /** Sensor crop on top of the active lens (1 = none). RAW is uncropped, so we crop it ourselves. */
+    @Volatile var zoomRatio = 1f; private set
+    private var rawBurst: RawBurst? = null
+    /** Our neutral tone, sent to the ISP so preview and YUV modes carry no maker curve. */
+    private val neutralCurve by lazy { Tone.curve(64).let { c -> android.hardware.camera2.params.TonemapCurve(c, c, c) } }
 
     @Volatile var deviceOrientation: Int = 0
     @Volatile var look: Look = Looks.NEUTRAL
@@ -154,7 +158,7 @@ class CameraController(private val context: Context, private val listener: Liste
         texture: SurfaceTexture, rawRefused: Boolean,
     ) {
         val jr = ImageReader.newInstance(jpeg.width, jpeg.height, ImageFormat.JPEG, 2)
-        val rr = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 2) }
+        val rr = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 4) }
         jpegReader = jr; rawReader = rr
         jr.setOnImageAvailableListener({ r -> onJpeg(r) }, handler)
         rr?.setOnImageAvailableListener({ r -> onRaw(r) }, handler)
@@ -215,6 +219,7 @@ class CameraController(private val context: Context, private val listener: Liste
         runCatching { rawReader?.close() }; rawReader = null
         runCatching { previewSurface?.release() }; previewSurface = null
         pending?.raw?.close(); pending = null
+        rawBurst?.let { rb -> rawBurst = null; endBurst(rb) }
         tapRegion = null
     }
 
@@ -326,6 +331,13 @@ class CameraController(private val context: Context, private val listener: Liste
                 val l = a.left + (a.width() - cw) / 2; val t = a.top + (a.height() - chh) / 2
                 b.set(CaptureRequest.SCALER_CROP_REGION, Rect(l, t, l + cw, t + chh))
             }
+        }
+
+        // No maker tone curve: the ISP gets our neutral curve wherever it accepts one.
+        val tonemaps = ch.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)?.toSet() ?: emptySet()
+        if (CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE in tonemaps) {
+            b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
+            b.set(CaptureRequest.TONEMAP_CURVE, neutralCurve)
         }
 
         if (natural) {
@@ -488,6 +500,12 @@ class CameraController(private val context: Context, private val listener: Liste
 
     private fun onRaw(r: ImageReader) {
         val img = r.acquireNextImage() ?: return
+        rawBurst?.let { rb ->
+            val frame = try { copyRaw(img) } catch (e: Throwable) { Log.w(TAG, "raw copy", e); null } finally { img.close() }
+            if (frame == null) rb.failed++ else rb.images[frame.timestampNs] = frame
+            matchBurst(rb)
+            return
+        }
         val p = pending
         if (p == null || p.raw != null) { img.close(); return }
         p.raw = img; tryFinish()
@@ -510,6 +528,130 @@ class CameraController(private val context: Context, private val listener: Liste
             }
             listener.onShotSaved(jpegUri, dngUri, thumbnail(jpeg, shot.orientation))
         }
+    }
+
+    // ---- RAW burst: our own development ------------------------------------------------------
+
+    /** True when stills can be developed by us from RAW (photo session with a RAW stream). */
+    val canDevelopRaw get() = rawReader != null && !timeSession
+
+    private class RawBurst(
+        val count: Int, val keepFirst: Boolean,
+        val sink: (RawFrame, RawMeta, Int) -> Unit,
+        val onDone: (BurstStats, (String) -> Uri?) -> Unit,
+    ) {
+        val images = HashMap<Long, RawFrame>(); val results = HashMap<Long, TotalCaptureResult>()
+        var delivered = 0; var failed = 0
+        var first: RawFrame? = null; var firstResult: TotalCaptureResult? = null
+        var done = false
+    }
+
+    /**
+     * Captures [count] RAW frames back to back (exposure and colour locked) and hands each one,
+     * with the metadata to develop it, to [sink] on the processing thread, in order. [onDone]
+     * runs after the last frame and gets a function that saves the first frame as DNG.
+     */
+    fun rawBurst(count: Int, keepFirst: Boolean, sink: (RawFrame, RawMeta, Int) -> Unit, onDone: (BurstStats, (String) -> Uri?) -> Unit) = handler.post {
+        val s = session; val dev = device; val rr = rawReader; val ch = characteristics
+        if (s == null || dev == null || rr == null || ch == null || timeSession || rawBurst != null || pending != null) {
+            listener.onError("המצלמה עוד לא מוכנה"); return@post
+        }
+        val rb = RawBurst(count, keepFirst, sink, onDone)
+        rawBurst = rb
+        val shadingModes = ch.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)?.toSet() ?: emptySet()
+        runCatching {
+            val requests = List(count) {
+                dev.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(rr.surface)
+                    apply(this)
+                    set(CaptureRequest.CONTROL_AE_LOCK, true)
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                    if (CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON in shadingModes)
+                        set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_ON)
+                }.build()
+            }
+            var started = false
+            s.captureBurst(requests, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureStarted(session: CameraCaptureSession, request: CaptureRequest, timestamp: Long, frameNumber: Long) {
+                    if (!started) { started = true; listener.onShutter() }
+                }
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                    rb.results[ts] = result; matchBurst(rb)
+                }
+                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
+                    rb.failed++; matchBurst(rb)
+                }
+            }, handler)
+            // Never hang the shutter: whatever arrived in 5 s is what we develop.
+            handler.postDelayed({ if (rawBurst === rb) { rawBurst = null; endBurst(rb) } }, 5000)
+        }.onFailure { rawBurst = null; listener.onError("הצילום נכשל: ${it.message}") }
+    }
+
+    private fun matchBurst(rb: RawBurst) {
+        val ch = characteristics ?: return
+        for (ts in rb.images.keys.toList()) {
+            val result = rb.results[ts] ?: continue
+            val frame = rb.images.remove(ts)!!; rb.results.remove(ts)
+            val meta = rawMeta(ch, result, frame.w, frame.h)
+            val index = rb.delivered++
+            if (index == 0 && rb.keepFirst) { rb.first = frame; rb.firstResult = result }
+            processor.execute { try { rb.sink(frame, meta, index) } catch (e: Throwable) { Log.e(TAG, "raw sink", e) } }
+        }
+        if (rb.delivered + rb.failed >= rb.count && rawBurst === rb) { rawBurst = null; endBurst(rb) }
+    }
+
+    private fun endBurst(rb: RawBurst) {
+        if (rb.done) return
+        rb.done = true
+        val ch = characteristics
+        val orientation = jpegOrientation()
+        val saveDng: (String) -> Uri? = { name ->
+            val f = rb.first; val r = rb.firstResult
+            if (f == null || r == null || ch == null) null
+            else runCatching { MediaSaver.saveDngFrame(context, ch, r, f, orientation, name) }.onFailure { Log.e(TAG, "dng", it) }.getOrNull()
+        }
+        val stats = BurstStats(rb.delivered, rb.failed, orientation)
+        processor.execute { rb.onDone(stats, saveDng) }
+    }
+
+    /** RAW_SENSOR (16-bit, possibly padded rows) -> tight array. */
+    private fun copyRaw(img: Image): RawFrame {
+        val w = img.width; val h = img.height
+        val plane = img.planes[0]
+        val buf = plane.buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val data = ShortArray(w * h)
+        val sb = buf.asShortBuffer()
+        val rowShorts = plane.rowStride / 2
+        if (rowShorts == w) sb.get(data) else for (y in 0 until h) { sb.position(y * rowShorts); sb.get(data, y * w, w) }
+        return RawFrame(w, h, data).also { it.timestampNs = img.timestamp }
+    }
+
+    private fun rawMeta(ch: CameraCharacteristics, r: TotalCaptureResult, w: Int, h: Int): RawMeta {
+        fun mat(t: android.hardware.camera2.params.ColorSpaceTransform?): FloatArray? = t?.let { m ->
+            val e = IntArray(18); m.copyElements(e, 0); FloatArray(9) { e[it * 2].toFloat() / e[it * 2 + 1] }
+        }
+        val pattern = ch.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
+        val black = r.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.takeIf { it.size == 4 }
+            ?: FloatArray(4) { i -> pattern?.getOffsetForIndex(i % 2, i / 2)?.toFloat() ?: 64f }
+        val white = r.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)?.toFloat()
+            ?: ch.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.toFloat() ?: 1023f
+        val g = r.get(CaptureResult.COLOR_CORRECTION_GAINS)
+        val gains = if (g != null) floatArrayOf(g.red, g.greenEven, g.greenOdd, g.blue) else floatArrayOf(2f, 1f, 1f, 1.6f)
+        val shading = r.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+        val sh = shading?.let { m -> Array(4) { c -> FloatArray(m.columnCount * m.rowCount) { i -> m.getGainFactor(c, i % m.columnCount, i / m.columnCount) } } }
+        val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        return RawMeta(
+            w, h, ch.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ?: 0,
+            black, white, gains,
+            mat(ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)) ?: identity, mat(ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2)),
+            // No forward matrix: fall back to the HAL's own colour correction for this frame.
+            mat(ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1)) ?: identity, mat(ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX2)),
+            ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1) ?: 21,
+            ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt() ?: 17,
+            sh, shading?.columnCount ?: 0, shading?.rowCount ?: 0,
+            postRawGain = (r.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100) / 100f,
+        )
     }
 
     private fun thumbnail(jpeg: ByteArray, orientation: Int): Bitmap? = runCatching {
