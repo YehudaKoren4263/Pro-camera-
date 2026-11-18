@@ -1,8 +1,5 @@
 package app.obscura.camera.ui
 
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.RenderEffect
 import android.graphics.SurfaceTexture
 import android.os.Build
 import android.view.TextureView
@@ -42,6 +39,15 @@ fun CameraPreview(
         modifier = modifier,
         factory = { ctx ->
             TextureView(ctx).apply {
+                // The shader's vignette needs the real size: re-apply when the layout changes.
+                addOnLayoutChangeListener { v, l, t, r, btm, ol, ot, or, ob ->
+                    if (Build.VERSION.SDK_INT >= 31 && (r - l != or - ol || btm - t != ob - ot)) {
+                        val id = v.tag as? String ?: return@addOnLayoutChangeListener
+                        app.obscura.camera.camera.Looks.ALL.firstOrNull { it.id == id }?.let { lk ->
+                            (v as TextureView).setRenderEffect(LookShader.effect(lk, r - l, btm - t))
+                        }
+                    }
+                }
                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                     override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) = texture(st)
                     override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
@@ -52,11 +58,9 @@ fun CameraPreview(
             }
         },
         update = { tv ->
-            if (Build.VERSION.SDK_INT >= 31) {
-                tv.setRenderEffect(
-                    if (look.isNeutral) null
-                    else RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(ColorMatrix(look.matrix)))
-                )
+            if (Build.VERSION.SDK_INT >= 31 && tv.tag != look.id) {
+                tv.tag = look.id
+                tv.setRenderEffect(LookShader.effect(look, tv.width, tv.height))
             }
         },
     )

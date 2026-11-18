@@ -143,6 +143,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 Mode.LONG -> "חשיפה ארוכה · עדיף להישען או להניח על משהו יציב"
                 Mode.PANNING -> "פאנינג · הקש על הנושא ועקוב אחריו בתנועה"
                 Mode.TRAILS -> "עקבות אור · מתאים ללילה, לכבישים ולכוכבים"
+                Mode.NIGHT -> "לילה · רצף פריימים שמתמזג בלי רוחות רפאים של תנועה"
+                Mode.CLEAN -> "הסרת אנשים · עמוד יציב, מי שעובר ייעלם"
                 Mode.DOUBLE -> "חשיפה כפולה · צלם את הפריים הראשון"
             },
         )
@@ -150,6 +152,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     override fun selectDuration(ms: Long) = _state.update { it.copy(durations = it.durations + (it.mode to ms)) }
     override fun selectBlend(blend: Blend) = _state.update { it.copy(blend = blend) }
+    override fun toggleComet() = _state.update { it.copy(comet = !it.comet) }
     override fun resetDouble() { clearDouble(); notify("החשיפה הכפולה התחילה מחדש") }
 
     private fun clearDouble() {
@@ -232,7 +235,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     private fun recordTime(s: CameraUiState) {
-        val mode = when (s.mode) { Mode.PANNING -> TimeMode.PANNING; Mode.TRAILS -> TimeMode.LIGHT_TRAILS; else -> TimeMode.LONG_EXPOSURE }
+        val mode = when (s.mode) {
+            Mode.PANNING -> TimeMode.PANNING
+            Mode.TRAILS -> if (s.comet) TimeMode.COMET else TimeMode.LIGHT_TRAILS
+            Mode.NIGHT -> TimeMode.NIGHT
+            Mode.CLEAN -> TimeMode.CLEAN_PLATE
+            else -> TimeMode.LONG_EXPOSURE
+        }
         val orientation = s.activeInfo?.sensorOrientation ?: 90
         // Panning locks onto the tapped subject (centre if none), mapped into sensor space.
         val subject = if (mode == TimeMode.PANNING) toSensor(s.focusPoint ?: Offset(0.5f, 0.5f), orientation).let { Roi.around(it.x, it.y) } else null
@@ -249,19 +258,47 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 delay(40)
             }
         }
-        controller.record(duration, sink = { frame -> session.add(frame) }) { stats ->
+        // Clean plate needs time between frames (people must move): nine frames spread over the
+        // whole duration, chosen by sensor timestamp. Every other mode takes every frame it can.
+        val slots = if (mode == TimeMode.CLEAN_PLATE) 9 else 0
+        var firstTs = -1L; var nextSlot = 0; var lastPreview = 0L
+        val look = s.look
+        controller.record(duration, sink = { frame ->
+            var take = true
+            if (slots > 0) {
+                if (firstTs < 0) firstTs = frame.timestampNs
+                val idx = (((frame.timestampNs - firstTs) / 1_000_000L) * slots / duration).toInt()
+                take = idx >= nextSlot && nextSlot < slots
+                if (take) nextSlot = idx + 1
+            }
+            if (take) {
+                session.add(frame)
+                // Live composite: the stack as it builds, about twice a second.
+                val now = System.currentTimeMillis()
+                if (now - lastPreview > 450) {
+                    lastPreview = now
+                    session.preview(8)?.let { p ->
+                        val bmp = runCatching { YuvImages.toBitmap(p, orientation, look) }.getOrNull()
+                        if (bmp != null) _state.update { it.copy(livePreview = bmp.asImageBitmap()) }
+                    }
+                }
+            }
+        }) { stats ->
             // Runs on the processor thread, after every frame was stacked.
             progressJob?.cancel()
             if (session.frames < 2) {
-                _state.update { it.copy(capturing = false, progress = null, busyText = null) }
+                _state.update { it.copy(capturing = false, progress = null, busyText = null, livePreview = null) }
                 notify("נקלטו רק ${session.frames} פריימים. נסה זמן ארוך יותר או יותר אור.")
                 return@record
             }
             _state.update { it.copy(progress = null, busyText = "מעבד ${session.frames} פריימים") }
-            val label = when (mode) { TimeMode.PANNING -> "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; else -> "חשיפה ארוכה" }
+            val label = when (mode) {
+                TimeMode.PANNING -> "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; TimeMode.COMET -> "שובל שביט"
+                TimeMode.NIGHT -> "לילה"; TimeMode.CLEAN_PLATE -> "הסרת אנשים"; else -> "חשיפה ארוכה"
+            }
             val description = "Obscura $label · ${session.frames} frames · ${stats.dropped} dropped · ${duration} ms · max shift ${session.maxShift}px"
             val look = _state.value.look
-            saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation, look.matrix.takeUnless { look.isNeutral }) }
+            saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation, look) }
             if (stats.dropped > session.frames) notify("$label · ${session.frames} פריימים (${stats.dropped} נזרקו כדי לשמור על קצב)")
         }
     }
@@ -289,7 +326,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 _state.update { it.copy(doubleGhost = null) }
                 val look = _state.value.look
                 saveComputed("חשיפה כפולה", "Obscura double exposure · ${blend.name.lowercase()}") {
-                    YuvImages.blendToBitmap(first, frame, blend, stats.orientation, look.matrix.takeUnless { look.isNeutral })
+                    YuvImages.blendToBitmap(first, frame, blend, stats.orientation, look)
                 }
             }
         }
@@ -305,15 +342,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
             val thumb = Bitmap.createScaledBitmap(bmp, (bmp.width / 16).coerceAtLeast(1), (bmp.height / 16).coerceAtLeast(1), true)
             bmp.recycle()
             _state.update {
-                it.copy(capturing = false, busyText = null, progress = null,
+                it.copy(capturing = false, busyText = null, progress = null, livePreview = null,
                     lastShot = thumb.asImageBitmap(), lastShotUri = uri ?: it.lastShotUri, lastShotHasRaw = false)
             }
             notify(if (uri != null) "$label נשמר" else "השמירה נכשלה")
         } catch (e: OutOfMemoryError) {
-            _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+            _state.update { it.copy(capturing = false, busyText = null, progress = null, livePreview = null) }
             notify("אין מספיק זיכרון לעיבוד. נסה זמן קצר יותר.")
         } catch (e: Exception) {
-            _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+            _state.update { it.copy(capturing = false, busyText = null, progress = null, livePreview = null) }
             notify("העיבוד נכשל: ${e.message}")
         }
     }
@@ -388,7 +425,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     override fun onError(message: String) {
         progressJob?.cancel()
-        _state.update { it.copy(capturing = false, progress = null, busyText = null) }
+        _state.update { it.copy(capturing = false, progress = null, busyText = null, livePreview = null) }
         notify(message)
     }
 }

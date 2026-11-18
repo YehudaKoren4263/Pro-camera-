@@ -28,25 +28,25 @@ object YuvImages {
                 v[o + c] = vb.get(vo + c * vPix)
             }
         }
-        return YuvFrame(w, h, y, u, v)
+        return YuvFrame(w, h, y, u, v).also { it.timestampNs = img.timestamp }
     }
 
     /**
      * Upright bitmap of [f] with the look applied, built row by row: one bitmap is the only
      * full-size allocation (48 MB at 12.6 MP, against ~190 MB for array + copies + rotation).
      */
-    fun toBitmap(f: YuvFrame, rotationDegrees: Int, matrix: FloatArray? = null, step: Int = 1): Bitmap {
+    fun toBitmap(f: YuvFrame, rotationDegrees: Int, look: app.obscura.camera.camera.Look? = null, step: Int = 1): Bitmap {
         val (w, h) = Render.outSize(f.w, f.h, rotationDegrees, step)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        Render.rows(f, rotationDegrees, matrix, step) { y, row -> bmp.setPixels(row, 0, w, 0, y, w, 1) }
+        Render.rows(f, rotationDegrees, look, step) { y, row -> bmp.setPixels(row, 0, w, 0, y, w, 1) }
         return bmp
     }
 
     /** Double exposure straight into one upright bitmap. */
-    fun blendToBitmap(a: YuvFrame, b: YuvFrame, mode: Blend, rotationDegrees: Int, matrix: FloatArray? = null): Bitmap {
+    fun blendToBitmap(a: YuvFrame, b: YuvFrame, mode: Blend, rotationDegrees: Int, look: app.obscura.camera.camera.Look? = null): Bitmap {
         val (w, h) = Render.outSize(a.w, a.h, rotationDegrees)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        Render.blendRows(a, b, mode, rotationDegrees, matrix) { y, row -> bmp.setPixels(row, 0, w, 0, y, w, 1) }
+        Render.blendRows(a, b, mode, rotationDegrees, look) { y, row -> bmp.setPixels(row, 0, w, 0, y, w, 1) }
         return bmp
     }
 }

@@ -90,6 +90,10 @@ private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable 
         preview(Modifier.fillMaxSize())
 
         // Double exposure: the first frame floats over the live image while the second is framed.
+        // Live composite: the stack builds on screen while recording.
+        s.livePreview?.let { lp ->
+            Image(lp, contentDescription = "התמונה המצטברת", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
         s.doubleGhost?.let { ghost ->
             Image(ghost, contentDescription = "הפריים הראשון", contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize().alpha(0.45f))
@@ -133,11 +137,11 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
             (fadeIn(tween(200)) + slideInVertically(tween(260)) { it / 4 }) togetherWith
                 (fadeOut(tween(140)) + slideOutVertically(tween(200)) { it / 4 })
         },
-        modifier = Modifier.fillMaxWidth().height(104.dp),
+        modifier = Modifier.fillMaxWidth().height(if (kind == "looks") 124.dp else 104.dp),
         contentAlignment = Alignment.Center,
         label = "panel",
     ) { (k, control, _) ->
-        Box(Modifier.fillMaxWidth().height(104.dp).padding(top = 10.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().height(if (k == "looks") 124.dp else 104.dp).padding(top = 10.dp), contentAlignment = Alignment.Center) {
             when (k) {
                 "dial" -> DialPanel(control!!, s, a)
                 "looks" -> LookStrip(s, a)

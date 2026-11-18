@@ -4,10 +4,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Paint
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.DngCreator
 import android.hardware.camera2.TotalCaptureResult
@@ -51,11 +47,9 @@ object MediaSaver {
      * EXIF records what made it. The bitmap must already be upright.
      */
     fun saveBitmap(context: Context, bitmap: Bitmap, look: Look, name: String, description: String, lookApplied: Boolean = false): Uri? {
-        val src = if (look.isNeutral || lookApplied) bitmap else Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888).also {
-            Canvas(it).drawBitmap(bitmap, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(look.matrix)) })
-        }
+        val src = bitmap
+        if (!look.isNeutral && !lookApplied && bitmap.isMutable) applyLookInPlace(bitmap, look)
         val bytes = ByteArrayOutputStream().use { bos -> src.compress(Bitmap.CompressFormat.JPEG, 96, bos); bos.toByteArray() }
-        if (src !== bitmap) src.recycle()
         val uri = insert(context, "$name.jpg", "image/jpeg") ?: return null
         context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
         runCatching {
@@ -76,14 +70,24 @@ object MediaSaver {
     }
 
     private fun applyLook(jpeg: ByteArray, look: Look): ByteArray {
-        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
-        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-        Canvas(out).drawBitmap(src, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(look.matrix)) })
-        src.recycle()
+        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, BitmapFactory.Options().apply { inMutable = true }) ?: return jpeg
+        applyLookInPlace(src, look)
         return ByteArrayOutputStream().use { bos ->
-            out.compress(Bitmap.CompressFormat.JPEG, 95, bos)
-            out.recycle()
+            src.compress(Bitmap.CompressFormat.JPEG, 96, bos)
+            src.recycle()
             bos.toByteArray()
+        }
+    }
+
+    /** LUT, vignette and grain, row by row, in place: no second full-size bitmap. */
+    fun applyLookInPlace(bmp: Bitmap, look: Look) {
+        if (look.isNeutral) return
+        val w = bmp.width; val h = bmp.height
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            bmp.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) row[x] = LookFx.apply(row[x], x, y, w, h, look)
+            bmp.setPixels(row, 0, w, 0, y, w, 1)
         }
     }
 

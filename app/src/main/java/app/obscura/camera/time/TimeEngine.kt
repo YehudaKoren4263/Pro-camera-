@@ -16,6 +16,8 @@ import kotlin.math.roundToInt
 
 /** Tightly packed YUV 4:2:0. u and v are (w/2) x (h/2). */
 class YuvFrame(val w: Int, val h: Int, val y: ByteArray, val u: ByteArray, val v: ByteArray) {
+    /** Sensor timestamp of the frame (ns), when it came from the camera. */
+    var timestampNs: Long = 0
     init {
         require(w % 2 == 0 && h % 2 == 0) { "even dimensions required" }
         require(y.size == w * h && u.size == (w / 2) * (h / 2) && v.size == u.size)
@@ -392,15 +394,26 @@ object Render {
         return if (rotation % 180 == 90) sh to sw else sw to sh
     }
 
-    fun rows(f: YuvFrame, rotation: Int, matrix: FloatArray?, step: Int = 1, sink: (Int, IntArray) -> Unit) =
-        walk(f.w, f.h, rotation, step, sink) { x, y -> applyMatrix(argb(f, x, y), matrix) }
-
-    fun blendRows(a: YuvFrame, b: YuvFrame, mode: Blend, rotation: Int, matrix: FloatArray?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
-        require(a.w == b.w && a.h == b.h) { "frame sizes differ" }
-        walk(a.w, a.h, rotation, step, sink) { x, y -> applyMatrix(DoubleExposure.blendPixel(argb(a, x, y), argb(b, x, y), mode), matrix) }
+    /** Rows of [f], upright, with [look] (LUT, vignette, grain) applied in output coordinates. */
+    fun rows(f: YuvFrame, rotation: Int, look: app.obscura.camera.camera.Look?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
+        val lk = look?.takeUnless { it.isNeutral }
+        walk(f.w, f.h, rotation, step, sink) { x, y, xo, yo, ow, oh ->
+            val p = argb(f, x, y)
+            if (lk == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lk)
+        }
     }
 
-    private inline fun walk(w: Int, h: Int, rotation: Int, step: Int, sink: (Int, IntArray) -> Unit, px: (Int, Int) -> Int) {
+    fun blendRows(a: YuvFrame, b: YuvFrame, mode: Blend, rotation: Int, look: app.obscura.camera.camera.Look?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
+        require(a.w == b.w && a.h == b.h) { "frame sizes differ" }
+        val lk = look?.takeUnless { it.isNeutral }
+        walk(a.w, a.h, rotation, step, sink) { x, y, xo, yo, ow, oh ->
+            val p = DoubleExposure.blendPixel(argb(a, x, y), argb(b, x, y), mode)
+            if (lk == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lk)
+        }
+    }
+
+    private inline fun walk(w: Int, h: Int, rotation: Int, step: Int, sink: (Int, IntArray) -> Unit,
+                            px: (Int, Int, Int, Int, Int, Int) -> Int) {
         val sw = w / step; val sh = h / step
         val (ow, oh) = outSize(w, h, rotation, step)
         val row = IntArray(ow)
@@ -415,7 +428,7 @@ object Render {
                     270 -> { xs = sw - 1 - yo; ys = xo }
                     else -> { xs = xo; ys = yo }
                 }
-                row[xo] = px(xs * step, ys * step)
+                row[xo] = px(xs * step, ys * step, xo, yo, ow, oh)
             }
             sink(yo, row)
         }

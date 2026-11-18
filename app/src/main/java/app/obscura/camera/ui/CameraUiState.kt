@@ -20,9 +20,11 @@ enum class Control(val label: String) { SHUTTER("תריס"), ISO("ISO"), EV("EV"
 /** Capture modes. Every mode except PHOTO runs on the time engine. */
 enum class Mode(val title: String, val time: Boolean, val durations: List<Long>, val defaultDuration: Long) {
     PHOTO("צילום", false, emptyList(), 0),
+    NIGHT("לילה", true, listOf(1000, 2000, 3000), 2000),
     LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000), 2000),
     PANNING("פאנינג", true, listOf(250, 500, 1000), 500),
     TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000), 4000),
+    CLEAN("הסרת אנשים", true, listOf(3000, 6000, 10000), 6000),
     DOUBLE("חשיפה כפולה", true, emptyList(), 0),
 }
 
@@ -79,6 +81,10 @@ data class CameraUiState(
     val progress: Float? = null,
     /** What the engine is doing right now ("מקליט", "מעבד 32 פריימים"). */
     val busyText: String? = null,
+    /** Light trails fade towards the tail (comet). */
+    val comet: Boolean = false,
+    /** The stack as it builds, shown over the viewfinder while recording (live composite). */
+    val livePreview: ImageBitmap? = null,
 ) {
     val duration get() = durations[mode] ?: mode.defaultDuration
     val activeLens get() = lenses.firstOrNull { it.key == activeLensKey }
@@ -108,4 +114,5 @@ interface CameraActions {
     fun selectDuration(ms: Long) {}
     fun selectBlend(blend: Blend) {}
     fun resetDouble() {}
+    fun toggleComet() {}
 }

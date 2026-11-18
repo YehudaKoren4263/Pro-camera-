@@ -140,7 +140,11 @@ class ScreenSnapshotTest {
         ),
     )
 
-    @Test fun looks() = shot(base.copy(looksOpen = true, look = Looks.IVORY, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f))
+    @Test fun looks() = shot(base.copy(looksOpen = true, look = Looks.STREET_NEG, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f))
+
+    @Test fun nightMode() = shot(base.copy(mode = Mode.NIGHT, jpegMp = 12.6f, rawActive = false))
+
+    @Test fun cleanPlateRecording() = shot(base.copy(mode = Mode.CLEAN, jpegMp = 12.6f, rawActive = false, capturing = true, progress = 0.4f, busyText = "מקליט"))
 
     @Test fun sensorPanel() = shot(base.copy(sensorOpen = true))
 

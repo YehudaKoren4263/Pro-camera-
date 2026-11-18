@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import app.obscura.camera.camera.ExposureMath
 import app.obscura.camera.camera.Lens
 import app.obscura.camera.camera.Look
+import app.obscura.camera.camera.LookCategory
 import app.obscura.camera.camera.Looks
 import app.obscura.camera.camera.OutputFormat
 import app.obscura.camera.time.Blend
@@ -220,14 +222,29 @@ fun InfoLine(s: CameraUiState, modifier: Modifier = Modifier) {
     }
 }
 
+/** Looks by category: tabs on top, cards below. Opens on the category of the current look. */
 @Composable
 fun LookStrip(s: CameraUiState, a: CameraActions) {
-    LazyRow(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = PaddingValues(horizontal = Ob.gutter),
-    ) {
-        items(Looks.ALL, key = { it.id }) { look -> LookCard(look, look == s.look) { a.selectLook(look) } }
+    var category by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(s.look.category) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            contentPadding = PaddingValues(horizontal = Ob.gutter),
+        ) {
+            items(LookCategory.entries) { c ->
+                val active = c == category
+                Txt(c.title, Ob.LabelHe.copy(color = if (active) Ob.Brass else Ob.Ash, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium),
+                    Modifier.press { category = c })
+            }
+        }
+        LazyRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = Ob.gutter),
+        ) {
+            items(Looks.ALL.filter { it.category == category }, key = { it.id }) { look -> LookCard(look, look == s.look) { a.selectLook(look) } }
+        }
     }
 }
 
@@ -235,15 +252,16 @@ fun LookStrip(s: CameraUiState, a: CameraActions) {
 private fun LookCard(look: Look, selected: Boolean, onClick: () -> Unit) {
     val border by animateColorAsState(if (selected) Ob.Brass else Ob.Hairline, tween(200), label = "lb")
     Column(
-        Modifier.width(110.dp).border(0.8.dp, border, RoundedCornerShape(8.dp)).press(onClick).padding(8.dp),
+        Modifier.width(124.dp).border(0.8.dp, border, RoundedCornerShape(8.dp)).press(onClick).padding(horizontal = 8.dp, vertical = 7.dp),
     ) {
-        Row(Modifier.fillMaxWidth().height(18.dp).clip(RoundedCornerShape(3.dp))) {
-            look.swatch.forEach { Box(Modifier.weight(1f).height(18.dp).background(Color(it))) }
+        // Skin · sky · foliage · red · grey, each pushed through the look.
+        Row(Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(3.dp))) {
+            look.swatch.forEach { Box(Modifier.weight(1f).height(14.dp).background(Color(it))) }
         }
-        Spacer(Modifier.height(7.dp))
-        Txt(look.name, Ob.Body.copy(fontSize = 12.sp, color = if (selected) Ob.Ivory else Ob.Ivory.copy(alpha = 0.8f)))
-        Spacer(Modifier.height(2.dp))
-        Txt(look.note, Ob.LabelHe.copy(fontSize = 9.5.sp, color = Ob.Smoke, fontWeight = FontWeight.Normal), maxLines = 2)
+        Spacer(Modifier.height(5.dp))
+        Ltr { Txt(look.name, Ob.Body.copy(fontSize = 12.sp, color = if (selected) Ob.Ivory else Ob.Ivory.copy(alpha = 0.85f))) }
+        Spacer(Modifier.height(1.dp))
+        Txt(look.note, Ob.LabelHe.copy(fontSize = 9.sp, color = Ob.Smoke, fontWeight = FontWeight.Normal), maxLines = 2)
     }
 }
 
@@ -272,17 +290,34 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                         when (s.mode) {
                             Mode.PANNING -> "הקש על הנושא. הוא יישאר חד, הרקע יימרח."
                             Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
+                            Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, ומה שזז לא משאיר רוח רפאים."
+                            Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר בתמונה ייעלם."
                             else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד."
                         },
-                        Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2,
+                        Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2, modifier = Modifier.weight(1f),
                     )
+                    if (s.mode == Mode.LONG) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass)) }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     s.mode.durations.forEach { ms -> Chip(ltr(formatDuration(ms)), s.duration == ms) { a.selectDuration(ms) } }
+                    if (s.mode == Mode.TRAILS) Chip("שובל שביט", s.comet) { a.toggleComet() }
                 }
             }
         }
     }
+}
+
+/**
+ * Computational ND, as camera makers label it: averaging duration / exposure frames darkens
+ * motion like an ND filter of that many stops.
+ */
+private fun ndMeter(s: CameraUiState): String? {
+    val exp = s.live.shutterNs ?: return null
+    if (exp <= 0) return null
+    val stops = kotlin.math.log2(s.duration * 1_000_000.0 / exp)
+    if (stops < 1) return null
+    val nd = 1L shl stops.toInt().coerceIn(1, 20)
+    return "≈ " + ltr("ND$nd") + " · " + ltr(String.format(java.util.Locale.US, "%.0f", stops)) + " עצירות"
 }
 
 fun formatDuration(ms: Long): String = when {

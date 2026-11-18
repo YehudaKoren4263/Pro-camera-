@@ -192,7 +192,7 @@ class TimeEngineTest {
         val perFrameMs = (System.nanoTime() - t0) / 1e6 / (frames.size - 1)
         val r0 = System.nanoTime(); val out = session.result(); val resultMs = (System.nanoTime() - r0) / 1e6
         val q0 = System.nanoTime(); var rows = 0
-        Render.rows(out, 90, Looks.IVORY.matrix) { _, _ -> rows++ }
+        Render.rows(out, 90, Looks.IVORY) { _, _ -> rows++ }
         val renderMs = (System.nanoTime() - q0) / 1e6
         println("perf 12.6MP: %.0f ms per frame (align + accumulate), merge %.0f ms, render+rotate+look %.0f ms, out %dx%d"
             .format(perFrameMs, resultMs, renderMs, out.w, out.h))
@@ -242,8 +242,12 @@ class TimeEngineTest {
     }
 
     @Test fun neutralLookIsIdentity() {
-        val p = rgb(12, 130, 250)
-        assertEquals(p, Render.applyMatrix(p, Looks.NEUTRAL.matrix))
+        // Render skips the neutral look entirely: the pixel comes out untouched.
+        val f = Yuv.fromArgb(IntArray(4 * 4) { rgb(12, 130, 250) }, 4, 4)
+        val plain = IntArray(16); val neutral = IntArray(16)
+        Render.rows(f, 0, null) { y, row -> row.copyInto(plain, y * 4) }
+        Render.rows(f, 0, Looks.NEUTRAL) { y, row -> row.copyInto(neutral, y * 4) }
+        assertTrue(plain.contentEquals(neutral))
     }
 
     // ---- Techniques adopted from other makers (docs/research/techniques.md) -------------------
