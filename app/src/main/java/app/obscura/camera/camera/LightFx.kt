@@ -34,12 +34,47 @@ data class LightParams(
     val isOff get() = rays <= 0f && glow <= 0f && halation <= 0f && relight <= 0f
 }
 
+/**
+ * What the light needs from the photo itself, independent of where the sun is and how strong
+ * anything is: luminance, the emission thresholds, glow and halation. Built once per photo.
+ */
+class LightBase internal constructor(
+    val w: Int, val h: Int, internal val lum: FloatArray, internal val t0: Float, internal val t1: Float,
+    internal val glow: FloatArray, internal val halo: FloatArray,
+)
+
 class LightMap private constructor(
-    private val mw: Int, private val mh: Int,
+    val mw: Int, val mh: Int,
     private val rays: FloatArray, private val glow: FloatArray, private val halo: FloatArray,
-    private val p: LightParams,
+    val p: LightParams,
+    private val base: LightBase,
 ) {
+    /**
+     * The same light with other strengths or warmth: only the sun's position changes the maps,
+     * so everything else reuses them (no recomputation).
+     */
+    fun with(q: LightParams): LightMap =
+        if (q.x == p.x && q.y == p.y) LightMap(mw, mh, rays, glow, halo, q, base) else from(base, q)
+
+    /** The three maps packed for the GPU preview: r = rays, g = glow, b = halation. */
+    fun packed(): FloatArray = FloatArray(mw * mh * 4) { i -> val k = i / 4; when (i % 4) { 0 -> rays[k]; 1 -> glow[k]; 2 -> halo[k]; else -> 1f } }
     private val sun = sunColor(p.warmth)
+
+    /** Column sampling positions for an image width: computed once, not per pixel per row. */
+    private class Cols(val w: Int, mw: Int) {
+        val x0 = IntArray(w); val x1 = IntArray(w); val ax = FloatArray(w)
+        init { for (x in 0 until w) { val fx = ((x + 0.5f) / w * mw - 0.5f).coerceIn(0f, mw - 1f); x0[x] = fx.toInt(); x1[x] = min(mw - 1, x0[x] + 1); ax[x] = fx - x0[x] } }
+    }
+    @Volatile private var cols: Cols? = null
+    private fun colsFor(w: Int): Cols = cols?.takeIf { it.w == w } ?: Cols(w, mw).also { cols = it }
+
+    /** The whole image, in place, in parallel bands of rows. */
+    fun apply(px: IntArray, w: Int, h: Int) {
+        java.util.stream.IntStream.range(0, (h + 15) / 16).parallel().forEach { b ->
+            val row = IntArray(w)
+            for (y in b * 16 until min(h, b * 16 + 16)) { System.arraycopy(px, y * w, row, 0, w); applyRow(row, y, w, h); System.arraycopy(row, 0, px, y * w, w) }
+        }
+    }
 
     /** Applies the light to one row of the full image (in place). */
     fun applyRow(row: IntArray, y: Int, w: Int, h: Int) {
@@ -47,9 +82,9 @@ class LightMap private constructor(
         val y0 = fy.toInt(); val y1 = min(mh - 1, y0 + 1); val ay = fy - y0
         val diag = sqrt(w.toFloat() * w + h.toFloat() * h)
         val sx = p.x * w; val sy = p.y * h
+        val c = colsFor(w)
         for (x in 0 until w) {
-            val fx = ((x + 0.5f) / w * mw - 0.5f).coerceIn(0f, mw - 1f)
-            val x0 = fx.toInt(); val x1 = min(mw - 1, x0 + 1); val ax = fx - x0
+            val x0 = c.x0[x]; val x1 = c.x1[x]; val ax = c.ax[x]
             fun s(a: FloatArray) = (a[y0 * mw + x0] * (1 - ax) + a[y0 * mw + x1] * ax) * (1 - ay) + (a[y1 * mw + x0] * (1 - ax) + a[y1 * mw + x1] * ax) * ay
             val c = row[x]
             var r = ((c shr 16) and 0xFF) / 255f; var g = ((c shr 8) and 0xFF) / 255f; var b = (c and 0xFF) / 255f
@@ -82,13 +117,27 @@ class LightMap private constructor(
          * Builds the light map from [small], a downscaled copy of the photo (ARGB, at most 640 px
          * on the long side). Everything heavy happens here, at small size.
          */
-        fun build(small: IntArray, w: Int, h: Int, p: LightParams): LightMap {
+        fun build(small: IntArray, w: Int, h: Int, p: LightParams): LightMap = from(base(small, w, h), p)
+
+        /** Everything that depends on the photo only (once per photo). */
+        fun base(small: IntArray, w: Int, h: Int): LightBase {
             val n = w * h
             val lum = FloatArray(n) { val c = small[it]; (0.2126f * ((c shr 16) and 0xFF) + 0.7152f * ((c shr 8) and 0xFF) + 0.0722f * (c and 0xFF)) / 255f }
             // Light is whatever is near the brightest part of this photo: robust to a uniform sky,
             // where percentiles would collapse onto one value.
             val sorted = lum.copyOf().apply { sort() }
             val t1 = max(0.25f, sorted[(n * 0.995f).toInt().coerceAtMost(n - 1)]); val t0 = t1 * 0.62f
+            // Glow: blurred highlights. Halation: blurred near-white points, wider.
+            val hi = FloatArray(n) { val v = ((lum[it] - 0.72f) / 0.28f).coerceIn(0f, 1f); v * v }
+            val glow = boxBlur(hi, w, h, max(2, w / 40), 3)
+            val peak = FloatArray(n) { val v = ((lum[it] - 0.9f) / 0.1f).coerceIn(0f, 1f); v }
+            val halo = boxBlur(peak, w, h, max(2, w / 70), 3).also { for (i in it.indices) it[i] = (it[i] * 1.6f).coerceAtMost(1f) }
+            return LightBase(w, h, lum, t0, t1, glow, halo)
+        }
+
+        /** The sun-dependent part: emission mask and rays, for a light source at p.x, p.y. */
+        fun from(b: LightBase, p: LightParams): LightMap {
+            val w = b.w; val h = b.h; val n = w * h; val lum = b.lum; val t0 = b.t0; val t1 = b.t1
             val sx = p.x * w; val sy = p.y * h
             val diag = sqrt(w.toFloat() * w + h.toFloat() * h)
 
@@ -104,7 +153,7 @@ class LightMap private constructor(
             // Radial blur towards the source (GPU Gems 3, ch. 13): decaying samples along the ray.
             val rays = FloatArray(n)
             val samples = 72; val density = 0.92f; val decay = 0.965f
-            for (y in 0 until h) for (x in 0 until w) {
+            java.util.stream.IntStream.range(0, h).parallel().forEach { y -> for (x in 0 until w) {
                 val ddx = (x - sx) * density / samples; val ddy = (y - sy) * density / samples
                 var px = x.toFloat(); var py = y.toFloat(); var illum = 0f; var weight = 1f
                 for (i in 0 until samples) {
@@ -114,14 +163,9 @@ class LightMap private constructor(
                     weight *= decay
                 }
                 rays[y * w + x] = illum / samples * 3.2f
-            }
+            } }
 
-            // Glow: blurred highlights. Halation: blurred near-white points, wider.
-            val hi = FloatArray(n) { val v = ((lum[it] - 0.72f) / 0.28f).coerceIn(0f, 1f); v * v }
-            val glow = boxBlur(hi, w, h, max(2, w / 40), 3)
-            val peak = FloatArray(n) { val v = ((lum[it] - 0.9f) / 0.1f).coerceIn(0f, 1f); v }
-            val halo = boxBlur(peak, w, h, max(2, w / 70), 3).also { for (i in it.indices) it[i] = (it[i] * 1.6f).coerceAtMost(1f) }
-            return LightMap(w, h, rays, glow, halo, p)
+            return LightMap(w, h, rays, b.glow, b.halo, p, b)
         }
 
         private fun boxBlur(src: FloatArray, w: Int, h: Int, r: Int, passes: Int): FloatArray {
@@ -145,4 +189,40 @@ class LightMap private constructor(
             return max(8, (w * s).roundToInt()) to max(8, (h * s).roundToInt())
         }
     }
+}
+
+/**
+ * The light studio's live preview on the GPU: the same formulas as [LightMap.applyRow], fed the
+ * maps as a float texture, so moving a slider only changes uniforms (instant, every frame).
+ * The saved photo is always rendered by the CPU path.
+ */
+object LightShader {
+    const val AGSL = """
+        uniform shader image;
+        uniform shader maps;
+        uniform float2 size;
+        uniform float2 msize;
+        uniform float2 sun;
+        uniform float rays;
+        uniform float glow;
+        uniform float halation;
+        uniform float relight;
+        uniform float3 sunc;
+        half4 main(float2 p) {
+            half4 c = image.eval(p);
+            float3 col = float3(c.rgb);
+            float diag = length(size);
+            if (relight > 0.0) {
+                float2 d = (p - sun) / diag;
+                float fall = exp(-dot(d, d) / (2.0 * 0.28 * 0.28)) * relight;
+                col *= 1.0 + fall * 0.55 * sunc;
+            }
+            float3 m = float3(maps.eval(p / size * msize).rgb);
+            float lr = m.r * rays * 0.9 + m.g * glow * 0.6;
+            float lh = m.b * halation;
+            float3 add = float3(lr * sunc.r + lh, lr * sunc.g + lh * 0.35, lr * sunc.b + lh * 0.12);
+            col = 1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(add, 0.0, 1.0));
+            return half4(half3(col), c.a);
+        }
+    """
 }

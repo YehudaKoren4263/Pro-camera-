@@ -76,18 +76,38 @@ object Hues {
 
 class Lut(val size: Int, val data: FloatArray) {
     /** Trilinear lookup of an ARGB pixel. */
+    /** Grid position of each 8-bit level: the same float as `c / 255f * n`, computed once. */
+    private val pos = FloatArray(256) { it / 255f * (size - 1) }
+    private val cell = IntArray(256) { pos[it].toInt().coerceAtMost(size - 2) }
+    private val frac = FloatArray(256) { pos[it] - cell[it] }
+
     fun apply(p: Int): Int {
-        val n = size - 1
-        val fr = ((p shr 16) and 0xFF) / 255f * n; val fg = ((p shr 8) and 0xFF) / 255f * n; val fb = (p and 0xFF) / 255f * n
-        val r0 = fr.toInt().coerceAtMost(n - 1); val g0 = fg.toInt().coerceAtMost(n - 1); val b0 = fb.toInt().coerceAtMost(n - 1)
-        val dr = fr - r0; val dg = fg - g0; val db = fb - b0
+        // The eight corners in the same order, with the same weights and the same sums as the
+        // straightforward loop: bit-identical results, without the loop and branch overhead.
+        val cr = (p shr 16) and 0xFF; val cg = (p shr 8) and 0xFF; val cb = p and 0xFF
+        val r0 = cell[cr]; val g0 = cell[cg]; val b0 = cell[cb]
+        val dr = frac[cr]; val dg = frac[cg]; val db = frac[cb]
+        val er = 1 - dr; val eg = 1 - dg; val eb = 1 - db
+        val sr = 3; val sg = size * 3; val sb = size * size * 3
+        val i0 = ((b0 * size + g0) * size + r0) * 3
+        val d = data
         var outR = 0f; var outG = 0f; var outB = 0f
-        for (k in 0..7) {
-            val ir = r0 + (k and 1); val ig = g0 + ((k shr 1) and 1); val ib = b0 + ((k shr 2) and 1)
-            val wgt = (if (k and 1 == 1) dr else 1 - dr) * (if ((k shr 1) and 1 == 1) dg else 1 - dg) * (if ((k shr 2) and 1 == 1) db else 1 - db)
-            val i = ((ib * size + ig) * size + ir) * 3
-            outR += wgt * data[i]; outG += wgt * data[i + 1]; outB += wgt * data[i + 2]
-        }
+        var w = er * eg * eb; var i = i0
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = dr * eg * eb; i = i0 + sr
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = er * dg * eb; i = i0 + sg
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = dr * dg * eb; i = i0 + sg + sr
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = er * eg * db; i = i0 + sb
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = dr * eg * db; i = i0 + sb + sr
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = er * dg * db; i = i0 + sb + sg
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
+        w = dr * dg * db; i = i0 + sb + sg + sr
+        outR += w * d[i]; outG += w * d[i + 1]; outB += w * d[i + 2]
         return (p and 0xFF000000.toInt()) or ((outR * 255f).roundToInt().coerceIn(0, 255) shl 16) or
             ((outG * 255f).roundToInt().coerceIn(0, 255) shl 8) or (outB * 255f).roundToInt().coerceIn(0, 255)
     }
@@ -231,9 +251,11 @@ object LookEngine {
 
 /** Spatial parts of a look, applied where the pixel position is known (final images). */
 object LookFx {
-    fun apply(p: Int, x: Int, y: Int, w: Int, h: Int, look: Look): Int {
-        var q = look.lut.apply(p)
-        val s = look.spec
+    fun apply(p: Int, x: Int, y: Int, w: Int, h: Int, look: Look): Int = apply(p, x, y, w, h, look.lut, look.spec)
+
+    /** As above with the LUT and recipe already resolved (hot loops resolve them once). */
+    fun apply(p: Int, x: Int, y: Int, w: Int, h: Int, lut: Lut, s: LookSpec): Int {
+        var q = lut.apply(p)
         if (s.vignette <= 0f && s.grain <= 0f) return q
         var r = (q shr 16) and 0xFF; var g = (q shr 8) and 0xFF; var b = q and 0xFF
         if (s.vignette > 0f) {

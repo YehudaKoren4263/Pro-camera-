@@ -14,6 +14,9 @@ import kotlin.math.roundToInt
  * on the saved photo, so the result is what you saw.
  */
 object Retouch {
+    /** c / 255f for every 8-bit level (the same floats, looked up). */
+    private val UNIT = FloatArray(256) { it / 255f }
+
     /** Skin likelihood from YCbCr (0..1 channels): the classic skin cluster, softened. */
     fun skin(r: Float, g: Float, b: Float): Float {
         val y = 0.299f * r + 0.587f * g + 0.114f * b
@@ -31,17 +34,20 @@ object Retouch {
         val out = IntArray(px.size)
         val sigma2 = 2f * 0.075f * 0.075f
         val taps = Array(12) { i -> val a = i * Math.PI / 6; val r = if (i % 2 == 0) radius else radius * 0.5f; floatArrayOf((kotlin.math.cos(a) * r).toFloat(), (kotlin.math.sin(a) * r).toFloat()) }
+        // Integer tap offsets: round(x + t) == x + round(t) for whole x (round = floor(v + 0.5)).
+        val tx = IntArray(12) { taps[it][0].roundToInt() }; val ty = IntArray(12) { taps[it][1].roundToInt() }
+        val inv = UNIT
         java.util.stream.IntStream.range(0, h).parallel().forEach { y ->
             for (x in 0 until w) {
                 val c = px[y * w + x]
-                val r = ((c shr 16) and 0xFF) / 255f; val g = ((c shr 8) and 0xFF) / 255f; val b = (c and 0xFF) / 255f
+                val r = inv[(c shr 16) and 0xFF]; val g = inv[(c shr 8) and 0xFF]; val b = inv[c and 0xFF]
                 val sk = skin(r, g, b)
                 if (sk < 0.01f) { out[y * w + x] = c; continue }
                 var ar = r; var ag = g; var ab = b; var ws = 1f
-                for (t in taps) {
-                    val xx = (x + t[0]).roundToInt().coerceIn(0, w - 1); val yy = (y + t[1]).roundToInt().coerceIn(0, h - 1)
+                for (k in 0 until 12) {
+                    val xx = (x + tx[k]).coerceIn(0, w - 1); val yy = (y + ty[k]).coerceIn(0, h - 1)
                     val q = px[yy * w + xx]
-                    val qr = ((q shr 16) and 0xFF) / 255f; val qg = ((q shr 8) and 0xFF) / 255f; val qb = (q and 0xFF) / 255f
+                    val qr = inv[(q shr 16) and 0xFF]; val qg = inv[(q shr 8) and 0xFF]; val qb = inv[q and 0xFF]
                     val d = (qr - r) * (qr - r) + (qg - g) * (qg - g) + (qb - b) * (qb - b)
                     val wt = exp(-d / sigma2)
                     ar += qr * wt; ag += qg * wt; ab += qb * wt; ws += wt

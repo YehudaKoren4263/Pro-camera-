@@ -99,11 +99,15 @@ object MediaSaver {
     fun applyLookInPlace(bmp: Bitmap, look: Look) {
         if (look.isNeutral) return
         val w = bmp.width; val h = bmp.height
-        val row = IntArray(w)
-        for (y in 0 until h) {
-            bmp.getPixels(row, 0, w, 0, y, w, 1)
-            for (x in 0 until w) row[x] = LookFx.apply(row[x], x, y, w, h, look)
-            bmp.setPixels(row, 0, w, 0, y, w, 1)
+        val lut = look.lut; val spec = look.spec
+        // Parallel bands of rows; each band reads and writes only its own rows.
+        val band = 32
+        java.util.stream.IntStream.range(0, (h + band - 1) / band).parallel().forEach { bi ->
+            val y0 = bi * band; val rows = minOf(band, h - y0)
+            val px = IntArray(w * rows)
+            bmp.getPixels(px, 0, w, 0, y0, w, rows)
+            for (r in 0 until rows) { val o = r * w; val y = y0 + r; for (x in 0 until w) px[o + x] = LookFx.apply(px[o + x], x, y, w, h, lut, spec) }
+            bmp.setPixels(px, 0, w, 0, y0, w, rows)
         }
     }
 

@@ -131,6 +131,21 @@ object Bokeh {
             lin[i * 3] = r * k; lin[i * 3 + 1] = g * k; lin[i * 3 + 2] = b * k
         }
         val off = samples(rMax, nSamples)
+        // Largest blur radius within reach of each tile: samples further out than that can never
+        // pass the coverage test, and the spiral grows outward, so the loop can stop there.
+        val tile = 16
+        val tw = (w + tile - 1) / tile; val th = (h + tile - 1) / tile
+        val tmax = FloatArray(tw * th)
+        for (i in 0 until w * h) { val t = ((i / w) / tile) * tw + (i % w) / tile; if (radius[i] > tmax[t]) tmax[t] = radius[i] }
+        val reach = (rMax / tile).toInt() + 1
+        val near = FloatArray(tw * th) { t ->
+            val ty = t / tw; val tx = t % tw; var m = 0f
+            for (yy in maxOf(0, ty - reach)..minOf(th - 1, ty + reach)) for (xx in maxOf(0, tx - reach)..minOf(tw - 1, tx + reach)) m = maxOf(m, tmax[yy * tw + xx])
+            m
+        }
+        val sampleR2 = FloatArray(nSamples) { off[it * 2] * off[it * 2] + off[it * 2 + 1] * off[it * 2 + 1] }
+        // round(x + o) == x + round(o) for whole x: integer offsets, computed once.
+        val offX = IntArray(nSamples) { off[it * 2].roundToInt() }; val offY = IntArray(nSamples) { off[it * 2 + 1].roundToInt() }
         val out = IntArray(w * h)
         val cx = w / 2f; val cy = h / 2f; val half = max(w, h) / 2f
         java.util.stream.IntStream.range(0, h).parallel().forEach { y ->
@@ -140,10 +155,13 @@ object Bokeh {
                 if (rp < 0.6f) { out[i] = argb[i]; continue }
                 var ar = lin[i * 3] / max(rp * rp, 1f); var ag = lin[i * 3 + 1] / max(rp * rp, 1f); var ab = lin[i * 3 + 2] / max(rp * rp, 1f)
                 var ws = 1f / max(rp * rp, 1f)
+                val nr = near[(y / tile) * tw + x / tile]
+                val limit = nr * nr * 1.1f
                 var s = 0
                 while (s < nSamples) {
-                    val ox = off[s * 2]; val oy = off[s * 2 + 1]; s++
-                    val qx = (x + ox).roundToInt(); val qy = (y + oy).roundToInt()
+                    if (sampleR2[s] > limit) break
+                    val ox = off[s * 2]; val oy = off[s * 2 + 1]
+                    val qx = x + offX[s]; val qy = y + offY[s]; s++
                     if (qx < 0 || qy < 0 || qx >= w || qy >= h) continue
                     val j = qy * w + qx
                     var rq = radius[j]

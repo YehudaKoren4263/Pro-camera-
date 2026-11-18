@@ -53,10 +53,14 @@ class SuperResolution(val scale: Int = 2) {
         val ow = w * scale; val oh = h * scale
         val outY = ByteArray(ow * oh)
         val strip = 64
-        val sum = FloatArray(ow * (strip + 2)); val wgt = FloatArray(ow * (strip + 2))
-        var y0 = 0
-        while (y0 < oh) {
-            val y1 = min(oh, y0 + strip)
+        // Strips are independent (each accumulates every frame, in order, into its own rows):
+        // run them in parallel, each thread with its own buffers. Same sums, same result.
+        val strips = (oh + strip - 1) / strip
+        val done = java.util.concurrent.atomic.AtomicInteger()
+        val buffers = ThreadLocal.withInitial { FloatArray(ow * (strip + 2)) to FloatArray(ow * (strip + 2)) }
+        java.util.stream.IntStream.range(0, strips).parallel().forEach { si ->
+            val y0 = si * strip; val y1 = min(oh, y0 + strip)
+            val (sum, wgt) = buffers.get()
             java.util.Arrays.fill(sum, 0f); java.util.Arrays.fill(wgt, 0f)
             for (i in frames.indices) splat(frames[i], offsets[i], y0, y1, ow, oh, sum, wgt)
             for (yy in y0 until y1) {
@@ -66,8 +70,7 @@ class SuperResolution(val scale: Int = 2) {
                     outY[o + x] = (if (wv > 0f) (sum[r + x] / wv + 0.5f).toInt() else 0).coerceIn(0, 255).toByte()
                 }
             }
-            progress(y1.toFloat() / oh * 0.85f)
-            y0 = y1
+            progress(done.incrementAndGet().toFloat() / strips * 0.85f)
         }
         val sharpY = deblur(outY, ow, oh)
         // Chroma of the fine grid = full input resolution: mean of integer-aligned chroma, upsampled 2x.
@@ -82,7 +85,7 @@ class SuperResolution(val scale: Int = 2) {
             }
         }
         val ou = ByteArray(w * h); val ov = ByteArray(w * h)
-        for (y in 0 until h) for (x in 0 until w) {
+        java.util.stream.IntStream.range(0, h).parallel().forEach { y -> for (x in 0 until w) {
             // Bilinear upsample from (cw, ch) to (w, h), sample centres aligned.
             val fx = ((x + 0.5f) / 2f - 0.5f).coerceIn(0f, cw - 1f); val fy = ((y + 0.5f) / 2f - 0.5f).coerceIn(0f, ch - 1f)
             val x0 = fx.toInt(); val y0c = fy.toInt(); val x1 = min(cw - 1, x0 + 1); val y1c = min(ch - 1, y0c + 1)
@@ -91,7 +94,7 @@ class SuperResolution(val scale: Int = 2) {
             fun bil(arr: IntArray) = (at(arr, x0, y0c) * (1 - ax) + at(arr, x1, y0c) * ax) * (1 - ay) + (at(arr, x0, y1c) * (1 - ax) + at(arr, x1, y1c) * ax) * ay
             ou[y * w + x] = (bil(su) + 0.5f).toInt().coerceIn(0, 255).toByte()
             ov[y * w + x] = (bil(sv) + 0.5f).toInt().coerceIn(0, 255).toByte()
-        }
+        } }
         progress(1f)
         return YuvFrame(ow, oh, sharpY, ou, ov)
     }
@@ -106,8 +109,9 @@ class SuperResolution(val scale: Int = 2) {
         val out = ByteArray(w * h)
         val strip = 64; val halo = 2
         val k0 = 0.25f; val k1 = 0.5f
-        var y0 = 0
-        while (y0 < h) {
+        // Each strip reads the source with its own halo and writes only its rows: parallel.
+        java.util.stream.IntStream.range(0, (h + strip - 1) / strip).parallel().forEach { si ->
+            val y0 = si * strip
             val y1 = min(h, y0 + strip)
             val a = max(0, y0 - halo); val b = min(h, y1 + halo); val rows = b - a
             val orig = FloatArray(rows * w) { (src[a * w + it].toInt() and 0xFF).toFloat() }
@@ -124,7 +128,6 @@ class SuperResolution(val scale: Int = 2) {
             }
             for (y in y0 until y1) { val r = (y - a) * w; val o = y * w
                 for (x in 0 until w) out[o + x] = (est[r + x] + 0.5f).toInt().coerceIn(0, 255).toByte() }
-            y0 = y1
         }
         return out
     }
@@ -172,13 +175,14 @@ object SubPixel {
         val src = ShortArray(w * h) { ((y[it].toInt() and 0xFF) * 16).toShort() }
         val tmp = ShortArray(w * h)
         repeat(2) {
-            for (yy in 0 until h) { val r = yy * w
+            // Horizontal then vertical pass; rows of one pass are independent (integer maths: exact).
+            java.util.stream.IntStream.range(0, h).parallel().forEach { yy -> val r = yy * w
                 for (x in 0 until w) {
                     val v = src[r + max(0, x - 2)] + 4 * src[r + max(0, x - 1)] + 6 * src[r + x] + 4 * src[r + min(w - 1, x + 1)] + src[r + min(w - 1, x + 2)]
                     tmp[r + x] = ((v + 8) shr 4).toShort()
                 }
             }
-            for (yy in 0 until h) {
+            java.util.stream.IntStream.range(0, h).parallel().forEach { yy ->
                 val r0 = max(0, yy - 2) * w; val r1 = max(0, yy - 1) * w; val r2 = yy * w; val r3 = min(h - 1, yy + 1) * w; val r4 = min(h - 1, yy + 2) * w
                 for (x in 0 until w) src[r2 + x] = ((tmp[r0 + x] + 4 * tmp[r1 + x] + 6 * tmp[r2 + x] + 4 * tmp[r3 + x] + tmp[r4 + x] + 8) shr 4).toShort()
             }

@@ -23,6 +23,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -52,7 +56,8 @@ fun StudioPanel(st: Studio, a: CameraActions, modifier: Modifier = Modifier) {
             Txt("סגירה", Ob.LabelHe, Modifier.press(a::closeStudio).padding(8.dp))
         }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f).padding(horizontal = Ob.gutter), contentAlignment = Alignment.Center) {
-            val img = st.preview
+            val gpu = st.base != null && st.maps != null && android.os.Build.VERSION.SDK_INT >= 33
+            val img = if (gpu) st.base else st.preview
             if (img == null) {
                 Txt("מכין תצוגה…", Ob.LabelHe)
             } else Ltr {
@@ -61,8 +66,14 @@ fun StudioPanel(st: Studio, a: CameraActions, modifier: Modifier = Modifier) {
                 val w = if (ratio > boxRatio) maxWidth else maxHeight * ratio
                 val h = if (ratio > boxRatio) maxWidth / ratio else maxHeight
                 Box(Modifier.size(w, h)) {
+                    val effect = if (gpu) rememberLightEffect() else null
                     Image(img, contentDescription = "התמונה עם התאורה", contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize()
-                        .pointerInput(Unit) { detectTapGestures { p -> a.studioLight(p.x / size.width, p.y / size.height) } })
+                        .then(if (effect != null && android.os.Build.VERSION.SDK_INT >= 33) Modifier.graphicsLayer {
+                            // Only uniforms change while a slider moves: redrawn by the GPU every frame.
+                            renderEffect = effect.update(st.params, st.maps!!, size.width, size.height)
+                        } else Modifier)
+                        .pointerInput(Unit) { detectTapGestures { p -> a.studioLight(p.x / size.width, p.y / size.height) } }
+                        .pointerInput(Unit) { detectDragGestures { ch, _ -> ch.consume(); a.studioLight((ch.position.x / size.width).coerceIn(-0.1f, 1.1f), (ch.position.y / size.height).coerceIn(-0.1f, 1.1f)) } })
                     // The sun marker: where the light comes from.
                     Canvas(Modifier.fillMaxSize()) {
                         val c = Offset(st.params.x * size.width, st.params.y * size.height)
@@ -72,7 +83,7 @@ fun StudioPanel(st: Studio, a: CameraActions, modifier: Modifier = Modifier) {
                 }
             }
         }
-        Txt("הקש על התמונה כדי למקם את מקור האור", Ob.LabelHe.copy(color = Ob.Smoke), Modifier.fillMaxWidth().padding(horizontal = Ob.gutter, vertical = 8.dp))
+        Txt(if (st.tracing) "מחשב קרניים…" else "הקש או גרור על התמונה כדי להזיז את מקור האור", Ob.LabelHe.copy(color = Ob.Smoke), Modifier.fillMaxWidth().padding(horizontal = Ob.gutter, vertical = 8.dp))
         Column(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             val p = st.params
             LightSlider("קרני שמש", p.rays) { a.studioParams(p.copy(rays = it)) }
@@ -110,4 +121,33 @@ private fun LightSlider(label: String, value: Float, onChange: (Float) -> Unit) 
         Spacer(Modifier.width(10.dp))
         Txt("${(value * 100).roundToInt()}", Ob.Mono.copy(color = Color(0xFF9A958B)), Modifier.width(28.dp))
     }
+}
+
+/** The light shader and its inputs, kept across frames; [update] only sets uniforms. */
+@androidx.annotation.RequiresApi(33)
+private class LightEffect {
+    private val shader = android.graphics.RuntimeShader(app.obscura.camera.camera.LightShader.AGSL)
+    private var mapsSource: androidx.compose.ui.graphics.ImageBitmap? = null
+
+    fun update(p: LightParams, maps: androidx.compose.ui.graphics.ImageBitmap, w: Float, h: Float): androidx.compose.ui.graphics.RenderEffect {
+        if (maps !== mapsSource) {
+            mapsSource = maps
+            val bmp = maps.asAndroidBitmap()
+            shader.setInputShader("maps", android.graphics.BitmapShader(bmp, android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
+                .apply { filterMode = android.graphics.BitmapShader.FILTER_MODE_LINEAR })
+            shader.setFloatUniform("msize", bmp.width.toFloat(), bmp.height.toFloat())
+        }
+        val sun = app.obscura.camera.camera.LightMap.sunColor(p.warmth)
+        shader.setFloatUniform("size", w, h)
+        shader.setFloatUniform("sun", p.x * w, p.y * h)
+        shader.setFloatUniform("rays", p.rays); shader.setFloatUniform("glow", p.glow)
+        shader.setFloatUniform("halation", p.halation); shader.setFloatUniform("relight", p.relight)
+        shader.setFloatUniform("sunc", sun[0], sun[1], sun[2])
+        return android.graphics.RenderEffect.createRuntimeShaderEffect(shader, "image").asComposeRenderEffect()
+    }
+}
+
+@Composable
+private fun rememberLightEffect(): LightEffect? = androidx.compose.runtime.remember {
+    if (android.os.Build.VERSION.SDK_INT >= 33) runCatching { LightEffect() }.getOrNull() else null
 }

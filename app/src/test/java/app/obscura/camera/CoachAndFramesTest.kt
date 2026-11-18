@@ -80,8 +80,9 @@ class CoachAndFramesTest {
     @Test fun rotateMatchesTheRenderer() {
         val f = frame(40, 30)
         for (r in listOf(90, 180, 270)) {
-            val rows = ArrayList<IntArray>()
-            Render.rows(f, r, null) { _, row -> rows += row.copyOf() }
+            val (rw, rh) = Render.outSize(f.w, f.h, r)
+            val rows = Array(rh) { IntArray(rw) }
+            Render.rows(f, r, null) { y, row -> row.copyInto(rows[y]) } // parallel bands: place by index
             val rot = Yuv.toArgb(FrameOps.rotate(f, r))
             val ow = rows[0].size
             for (y in rows.indices) for (x in 0 until ow) assertEquals("r=$r at $x,$y", rows[y][x], rot[y * ow + x])

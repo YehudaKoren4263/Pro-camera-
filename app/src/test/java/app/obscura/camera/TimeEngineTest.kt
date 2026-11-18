@@ -194,7 +194,9 @@ class TimeEngineTest {
         val perFrameMs = (System.nanoTime() - t0) / 1e6 / (frames.size - 1)
         val r0 = System.nanoTime(); val out = session.result(); val resultMs = (System.nanoTime() - r0) / 1e6
         val q0 = System.nanoTime(); var rows = 0
-        Render.rows(out, 90, Looks.IVORY) { _, _ -> rows++ }
+        val counted = java.util.concurrent.atomic.AtomicInteger()
+        Render.rows(out, 90, Looks.IVORY) { _, _ -> counted.incrementAndGet() } // rows come from parallel bands
+        rows = counted.get()
         val renderMs = (System.nanoTime() - q0) / 1e6
         println("perf 12.6MP: %.0f ms per frame (align + accumulate), merge %.0f ms, render+rotate+look %.0f ms, out %dx%d"
             .format(perFrameMs, resultMs, renderMs, out.w, out.h))

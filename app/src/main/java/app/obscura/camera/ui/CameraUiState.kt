@@ -234,6 +234,11 @@ data class Gallery(
 /** The light studio: a preview of the last photo with light added, and the light's settings. */
 data class Studio(
     val preview: ImageBitmap? = null,
+    /** GPU preview: the photo without light, and the light maps (rays, glow, halation) as a float texture. */
+    val base: ImageBitmap? = null,
+    val maps: ImageBitmap? = null,
+    /** Maps are being recomputed for a new sun position (the old ones stay on screen). */
+    val tracing: Boolean = false,
     val params: app.obscura.camera.camera.LightParams = app.obscura.camera.camera.LightParams(),
     val saving: Boolean = false,
 )

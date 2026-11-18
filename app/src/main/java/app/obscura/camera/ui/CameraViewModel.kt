@@ -772,11 +772,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         return out
     }
 
+    /** Recently viewed photos (screen size), so swiping back and forth is instant. */
+    private val galleryCache = object : android.util.LruCache<Uri, Bitmap>(64 * 1024 * 1024) {
+        override fun sizeOf(key: Uri, value: Bitmap) = value.byteCount
+    }
+
+    private fun galleryBitmap(uri: Uri): Bitmap? = galleryCache.get(uri) ?: runCatching { decodeUpright(uri, 1600) }.getOrNull()?.also { galleryCache.put(uri, it) }
+
     private fun loadGalleryImage(i: Int) {
         galleryJob?.cancel()
-        val uri = _state.value.gallery?.items?.getOrNull(i) ?: return
+        val items = _state.value.gallery?.items ?: return
+        val uri = items.getOrNull(i) ?: return
         galleryJob = viewModelScope.launch(Dispatchers.IO) {
-            val bmp = runCatching { decodeUpright(uri, 1600) }.getOrNull()
+            // 1. Something on screen at once: the cached image, or the system thumbnail (milliseconds).
+            val cached = galleryCache.get(uri)
+            if (cached == null && android.os.Build.VERSION.SDK_INT >= 29) {
+                runCatching { getApplication<Application>().contentResolver.loadThumbnail(uri, android.util.Size(512, 512), null) }.getOrNull()?.let { t ->
+                    if (isActive) _state.update { s -> s.gallery?.takeIf { it.index == i && it.image == null }?.let { s.copy(gallery = it.copy(image = t.asImageBitmap())) } ?: s }
+                }
+            }
+            // 2. The sharp version.
+            val bmp = cached ?: galleryBitmap(uri)
             val info = runCatching {
                 getApplication<Application>().contentResolver.query(uri, arrayOf(
                     android.provider.MediaStore.MediaColumns.WIDTH, android.provider.MediaStore.MediaColumns.HEIGHT,
@@ -788,6 +804,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 }
             }.getOrNull()
             if (isActive) _state.update { s -> s.gallery?.takeIf { it.index == i }?.let { s.copy(gallery = it.copy(image = bmp?.asImageBitmap(), info = info, loading = false)) } ?: s }
+            // 3. Neighbours ready before the next swipe.
+            for (j in listOf(i + 1, i - 1)) { if (!isActive) break; items.getOrNull(j)?.let { galleryBitmap(it) } }
         }
     }
 
@@ -796,7 +814,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         val g = _state.value.gallery ?: return
         val k = i.coerceIn(0, (g.items.size - 1).coerceAtLeast(0))
         if (k == g.index) return
-        _state.update { it.copy(gallery = g.copy(index = k, image = null, info = null, loading = true)) }
+        // Already decoded (a neighbour was prefetched): show it in the same frame as the swipe.
+        val ready = g.items.getOrNull(k)?.let { galleryCache.get(it) }?.asImageBitmap()
+        _state.update { it.copy(gallery = g.copy(index = k, image = ready, info = null, loading = ready == null)) }
         loadGalleryImage(k)
     }
     override fun galleryLight() { _state.value.gallery?.let { g -> g.items.getOrNull(g.index)?.let(::openStudioFor) } }
@@ -815,6 +835,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     private var studioBase: Bitmap? = null
     private var studioUri: Uri? = null
     private var studioJob: Job? = null
+    /** Per-photo light data (computed once) and the current sun's maps. */
+    private var studioLightBase: app.obscura.camera.camera.LightBase? = null
+    private var studioMap: LightMap? = null
+    /** Live preview on the GPU (Android 13+): sliders only change shader uniforms. */
+    private val studioGpu = android.os.Build.VERSION.SDK_INT >= 33
 
     override fun openStudio() {
         _state.value.lastShotUri?.let(::openStudioFor) ?: notify("עוד אין תמונה. צלם קודם.")
@@ -827,11 +852,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
             val base = runCatching { decodeUpright(uri, 1440) }.getOrNull()
             if (base == null) { _state.update { it.copy(studio = null) }; notify("לא הצלחתי לפתוח את התמונה"); return@launch }
             studioBase = base
+            // The photo's own light data, once: luminance, glow, halation.
+            val (mw, mh) = LightMap.mapSize(base.width, base.height)
+            val small = Bitmap.createScaledBitmap(base, mw, mh, true)
+            val px = IntArray(mw * mh); small.getPixels(px, 0, mw, 0, 0, mw, mh); if (small !== base) small.recycle()
+            studioLightBase = LightMap.base(px, mw, mh)
+            if (studioGpu) _state.update { s -> s.studio?.let { s.copy(studio = it.copy(base = base.asImageBitmap())) } ?: s }
             renderStudio()
         }
     }
 
-    override fun closeStudio() { studioJob?.cancel(); _state.update { it.copy(studio = null) }; studioBase = null }
+    /** The light maps as an RGBA half-float texture for the GPU preview (no 8-bit rounding). */
+    @android.annotation.SuppressLint("HalfFloat") // half-floats stored as raw shorts on purpose: that is the texture format
+    private fun mapsBitmap(m: LightMap): Bitmap {
+        val packed = m.packed()
+        val buf = java.nio.ByteBuffer.allocateDirect(packed.size * 2).order(java.nio.ByteOrder.nativeOrder())
+        val sb = buf.asShortBuffer()
+        for (v in packed) sb.put(android.util.Half.toHalf(v))
+        return Bitmap.createBitmap(m.mw, m.mh, Bitmap.Config.RGBA_F16).apply { copyPixelsFromBuffer(buf.rewind()) }
+    }
+
+    override fun closeStudio() { studioJob?.cancel(); _state.update { it.copy(studio = null) }; studioBase = null; studioLightBase = null; studioMap = null }
 
     override fun studioLight(x: Float, y: Float) {
         _state.update { s -> s.studio?.let { s.copy(studio = it.copy(params = it.params.copy(x = x, y = y))) } ?: s }
@@ -843,16 +884,35 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         renderStudio()
     }
 
-    /** Re-renders the preview, dropping any render the next change makes obsolete. */
+    /**
+     * Brings the preview up to date. Strength and warmth reuse the maps (on the GPU they are just
+     * uniforms, so nothing runs here at all); only a new sun position recomputes the rays.
+     */
     private fun renderStudio() {
+        val lb = studioLightBase ?: return
+        val p = _state.value.studio?.params ?: return
+        val cur = studioMap
+        val sunMoved = cur == null || cur.p.x != p.x || cur.p.y != p.y
+        if (studioGpu && !sunMoved) { studioMap = cur!!.with(p); return }
         studioJob?.cancel()
         studioJob = viewModelScope.launch(Dispatchers.Default) {
-            delay(24)
-            val base = studioBase ?: return@launch
-            val p = _state.value.studio?.params ?: return@launch
-            val out = base.copy(Bitmap.Config.ARGB_8888, true)
-            applyLight(out, p)
-            if (isActive) _state.update { s -> s.studio?.let { s.copy(studio = it.copy(preview = out.asImageBitmap())) } ?: s }
+            if (sunMoved) _state.update { s -> s.studio?.let { s.copy(studio = it.copy(tracing = true)) } ?: s }
+            val map = if (sunMoved) LightMap.from(lb, p) else cur!!.with(p)
+            if (!isActive) return@launch
+            studioMap = map
+            if (studioGpu) {
+                val maps = mapsBitmap(map)
+                if (isActive) _state.update { s -> s.studio?.let { s.copy(studio = it.copy(maps = maps.asImageBitmap(), tracing = false)) } ?: s }
+            } else {
+                // Without the GPU: the full CPU render, in parallel bands, at preview size.
+                val base = studioBase ?: return@launch
+                val w = base.width; val h = base.height
+                val px = IntArray(w * h); base.getPixels(px, 0, w, 0, 0, w, h)
+                map.apply(px, w, h)
+                if (!isActive) return@launch
+                val out = Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+                _state.update { s -> s.studio?.let { s.copy(studio = it.copy(preview = out.asImageBitmap(), tracing = false)) } ?: s }
+            }
         }
     }
 
@@ -892,12 +952,39 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         val small = Bitmap.createScaledBitmap(bmp, mw, mh, true)
         val px = IntArray(mw * mh); small.getPixels(px, 0, mw, 0, 0, mw, mh); if (small !== bmp) small.recycle()
         val map = LightMap.build(px, mw, mh, p)
-        val row = IntArray(w)
-        for (y in 0 until h) { bmp.getPixels(row, 0, w, 0, y, w, 1); map.applyRow(row, y, w, h); bmp.setPixels(row, 0, w, 0, y, w, 1) }
+        // Parallel bands: each reads and writes only its own rows (no full-size copy).
+        val band = 32
+        java.util.stream.IntStream.range(0, (h + band - 1) / band).parallel().forEach { bi ->
+            val y0 = bi * band; val rows = minOf(band, h - y0)
+            val buf = IntArray(w * rows); bmp.getPixels(buf, 0, w, 0, y0, w, rows)
+            val row = IntArray(w)
+            for (r in 0 until rows) { System.arraycopy(buf, r * w, row, 0, w); map.applyRow(row, y0 + r, w, h); System.arraycopy(row, 0, buf, r * w, w) }
+            bmp.setPixels(buf, 0, w, 0, y0, w, rows)
+        }
     }
 
-    /** Decodes a photo upright (EXIF rotation applied), mutable, long side at most [maxSide] (0 = full). */
+    /**
+     * Decodes a photo upright, mutable, long side at most [maxSide] (0 = full). ImageDecoder
+     * scales inside the JPEG decoder (it never builds the full image to shrink it) and applies
+     * the EXIF orientation itself, without a second full-size bitmap.
+     */
     private fun decodeUpright(uri: Uri, maxSide: Int): Bitmap? {
+        if (android.os.Build.VERSION.SDK_INT >= 28) runCatching {
+            val src = android.graphics.ImageDecoder.createSource(getApplication<Application>().contentResolver, uri)
+            return android.graphics.ImageDecoder.decodeBitmap(src) { dec, info, _ ->
+                val w = info.size.width; val h = info.size.height
+                if (maxSide > 0 && maxOf(w, h) > maxSide) {
+                    val k = maxSide.toFloat() / maxOf(w, h)
+                    dec.setTargetSize((w * k).toInt().coerceAtLeast(1), (h * k).toInt().coerceAtLeast(1))
+                }
+                dec.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                dec.isMutableRequired = true
+            }
+        }
+        return decodeUprightLegacy(uri, maxSide)
+    }
+
+    private fun decodeUprightLegacy(uri: Uri, maxSide: Int): Bitmap? {
         val cr = getApplication<Application>().contentResolver
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         cr.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }

@@ -395,30 +395,38 @@ object Render {
     }
 
     /** Rows of [f], upright, with [look] (LUT, vignette, grain) applied in output coordinates. */
+    /**
+     * Upright ARGB rows of [f] with the look. Rows are rendered in parallel bands: [sink] may be
+     * called from several threads at once and in any order (each call owns its row array).
+     */
     fun rows(f: YuvFrame, rotation: Int, look: app.obscura.camera.camera.Look?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
         val lk = look?.takeUnless { it.isNeutral }
+        val lut = lk?.lut; val spec = lk?.spec
         walk(f.w, f.h, rotation, step, sink) { x, y, xo, yo, ow, oh ->
             val p = argb(f, x, y)
-            if (lk == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lk)
+            if (lut == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lut, spec!!)
         }
     }
 
     fun blendRows(a: YuvFrame, b: YuvFrame, mode: Blend, rotation: Int, look: app.obscura.camera.camera.Look?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
         require(a.w == b.w && a.h == b.h) { "frame sizes differ" }
         val lk = look?.takeUnless { it.isNeutral }
+        val lut = lk?.lut; val spec = lk?.spec
         walk(a.w, a.h, rotation, step, sink) { x, y, xo, yo, ow, oh ->
             val p = DoubleExposure.blendPixel(argb(a, x, y), argb(b, x, y), mode)
-            if (lk == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lk)
+            if (lut == null) p else app.obscura.camera.camera.LookFx.apply(p, xo, yo, ow, oh, lut, spec!!)
         }
     }
 
-    private inline fun walk(w: Int, h: Int, rotation: Int, step: Int, sink: (Int, IntArray) -> Unit,
-                            px: (Int, Int, Int, Int, Int, Int) -> Int) {
+    private inline fun walk(w: Int, h: Int, rotation: Int, step: Int, crossinline sink: (Int, IntArray) -> Unit,
+                            crossinline px: (Int, Int, Int, Int, Int, Int) -> Int) {
         val sw = w / step; val sh = h / step
         val (ow, oh) = outSize(w, h, rotation, step)
-        val row = IntArray(ow)
         val r = ((rotation % 360) + 360) % 360
-        for (yo in 0 until oh) {
+        val band = 16
+        java.util.stream.IntStream.range(0, (oh + band - 1) / band).parallel().forEach { bi ->
+          for (yo in bi * band until minOf(oh, bi * band + band)) {
+            val row = IntArray(ow)
             for (xo in 0 until ow) {
                 // Inverse mapping: which sampled source pixel lands at (xo, yo) after rotating.
                 val xs: Int; val ys: Int
@@ -431,6 +439,7 @@ object Render {
                 row[xo] = px(xs * step, ys * step, xo, yo, ow, oh)
             }
             sink(yo, row)
+          }
         }
     }
 
