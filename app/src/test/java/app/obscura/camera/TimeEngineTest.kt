@@ -8,6 +8,8 @@ import app.obscura.camera.time.Render
 import app.obscura.camera.time.Stacker
 import app.obscura.camera.time.Combine
 import app.obscura.camera.time.RobustStacker
+import app.obscura.camera.time.SuperResolution
+import app.obscura.camera.time.AutoStop
 import app.obscura.camera.time.TemporalMedian
 import app.obscura.camera.time.Roi
 import app.obscura.camera.time.TimeMode
@@ -333,5 +335,110 @@ class TimeEngineTest {
         s.add(noisy(0, 0))
         val p = s.preview(8)!!
         assertEquals(W / 8, p.w); assertEquals(H / 8, p.h)
+    }
+
+    @Test fun superResolutionRecoversDetail() {
+        // Ground truth at 2x: what real scenes have. Hard edges (blocks), and fine stripes with a
+        // 3.2 px period, which the half-resolution frames cannot resolve on their own (they alias).
+        // Pure per-pixel noise is left out: no method can recover it through a pixel's aperture.
+        val gw = 400; val gh = 300
+        val g = IntArray(gw * gh) { i ->
+            val x = i % gw; val y = i / gw
+            val blocks = hash(x / 23, y / 19) / 2 // unique shapes, as any real texture has
+            val stripes = if (y in 110..190) (45 * kotlin.math.cos(2 * Math.PI * (x + 0.3 * y) / 3.2)).toInt() else 0
+            (70 + blocks + stripes).coerceIn(0, 255)
+        }
+        fun gAt(x: Int, y: Int) = g[y.coerceIn(0, gh - 1) * gw + x.coerceIn(0, gw - 1)]
+        // Each low-res frame is a 2x2 box average of the truth, shifted by (sx, sy) truth pixels.
+        val shifts = listOf(0 to 0, 1 to 0, 0 to 1, 1 to 1, 3 to 2, 2 to 3, 5 to 1, 1 to 5)
+        val lw = gw / 2; val lh = gh / 2
+        val frames = shifts.map { (sx, sy) ->
+            val px = IntArray(lw * lh) { i ->
+                val x = i % lw; val y = i / lw
+                val v = (gAt(2 * x + sx, 2 * y + sy) + gAt(2 * x + sx + 1, 2 * y + sy) + gAt(2 * x + sx, 2 * y + sy + 1) + gAt(2 * x + sx + 1, 2 * y + sy + 1)) / 4
+                rgb(v, v, v)
+            }
+            Yuv.fromArgb(px, lw, lh)
+        }
+        val sr = SuperResolution(2)
+        frames.forEach(sr::add)
+        shifts.forEachIndexed { i, (sx, sy) ->
+            val o = sr.offset(i)
+            assertTrue("offset $i x ${o[0]} vs ${-sx / 2f}", abs(o[0] + sx / 2f) < 0.2f)
+            assertTrue("offset $i y ${o[1]} vs ${-sy / 2f}", abs(o[1] + sy / 2f) < 0.2f)
+        }
+        val out = sr.result()
+        assertEquals(gw, out.w); assertEquals(gh, out.h)
+        // Baseline: bilinear 2x upscale of the first frame.
+        val f0 = frames[0]
+        fun up(x: Int, y: Int): Float {
+            val fx = ((x + 0.5f) / 2f - 0.5f).coerceIn(0f, lw - 1f); val fy = ((y + 0.5f) / 2f - 0.5f).coerceIn(0f, lh - 1f)
+            val x0 = fx.toInt(); val y0 = fy.toInt(); val x1 = minOf(lw - 1, x0 + 1); val y1 = minOf(lh - 1, y0 + 1)
+            fun l(xx: Int, yy: Int) = (f0.y[yy * lw + xx].toInt() and 0xFF).toFloat()
+            val ax = fx - x0; val ay = fy - y0
+            return (l(x0, y0) * (1 - ax) + l(x1, y0) * ax) * (1 - ay) + (l(x0, y1) * (1 - ax) + l(x1, y1) * ax) * ay
+        }
+        fun psnr(err: Double) = 10 * kotlin.math.log10(255.0 * 255.0 / err)
+        var eSr = 0.0; var eUp = 0.0; var n = 0
+        for (y in 16 until gh - 16) for (x in 16 until gw - 16) {
+            val t = g[y * gw + x].toDouble()
+            val a = (out.y[y * gw + x].toInt() and 0xFF) - t; val b = up(x, y) - t
+            eSr += a * a; eUp += b * b; n++
+        }
+        val pSr = psnr(eSr / n); val pUp = psnr(eUp / n)
+        val srImg = IntArray(gw * gh) { i -> val v = out.y[i].toInt() and 0xFF; rgb(v, v, v) }
+        val upImg = IntArray(gw * gh) { i -> val v = up(i % gw, i / gw).toInt(); rgb(v, v, v) }
+        save(Yuv.fromArgb(upImg, gw, gh), "superres_1_upscaled"); save(Yuv.fromArgb(srImg, gw, gh), "superres_2_obscura")
+        save(Yuv.fromArgb(IntArray(gw * gh) { rgb(g[it], g[it], g[it]) }, gw, gh), "superres_0_truth")
+        println("super-res: PSNR %.2f dB vs bilinear upscale %.2f dB (+%.2f dB)".format(pSr, pUp, pSr - pUp))
+        assertTrue("super-resolution beats upscaling by > 1.5 dB", pSr > pUp + 1.5)
+    }
+
+    @Test fun superResolutionFullSizeBudget() {
+        val w = 4096; val h = 3072
+        val base = ByteArray(w * h) { i -> texture(i % w, i / w).toByte() }
+        val uv = ByteArray((w / 2) * (h / 2)) { 128.toByte() }
+        val sr = SuperResolution(2)
+        val t0 = System.nanoTime()
+        for (k in 0 until 4) sr.add(YuvFrame(w, h, ByteArray(w * h) { i -> base[((i / w + k).coerceAtMost(h - 1)) * w + (i % w + k).coerceAtMost(w - 1)] }, uv.copyOf(), uv.copyOf()))
+        val alignMs = (System.nanoTime() - t0) / 1e6 / 4
+        val r0 = System.nanoTime(); val out = sr.result(); val mergeMs = (System.nanoTime() - r0) / 1e6
+        println("super-res 12.6MP x4 -> %dx%d (%.1f MP): align %.0f ms/frame, merge %.0f ms".format(out.w, out.h, out.w * out.h / 1e6, alignMs, mergeMs))
+        assertEquals(8192, out.w); assertEquals(6144, out.h)
+    }
+
+    @Test fun autoStopEndsAWaterfallOnceItIsSilky() {
+        // A waterfall stream: the running mean settles as frames accumulate. Auto-stop must end
+        // it after it settles, not before and not never.
+        val frames = (0 until 120).map { i ->
+            val f = frame(0, 0, -500, -500)
+            for (y in 0 until H) for (x in 140 until 190) f.y[y * W + x] = (150 + texture(x * 3, y + i * 23) / 3).coerceIn(0, 255).toByte()
+            f
+        }
+        val session = TimeSession(TimeMode.LONG_EXPOSURE, null, align = false)
+        val stop = AutoStop(AutoStop.Kind.CONVERGE)
+        var stoppedAt = -1
+        for ((i, f) in frames.withIndex()) {
+            session.add(f)
+            if (i % 4 == 3 && stop.feed(session.preview(4)!!.y, i * 33L)) { stoppedAt = i; break }
+        }
+        println("auto-stop: waterfall settled after %d frames (%.1f s at 30 fps), last change %.2f".format(stoppedAt + 1, (stoppedAt + 1) / 30.0, stop.lastChange))
+        assertTrue("stopped (at $stoppedAt)", stoppedAt > 0)
+        assertTrue("not before the water is smooth", stoppedAt >= 20)
+    }
+
+    @Test fun autoStopEndsLightTrailsWhenTheCarsAreGone() {
+        val session = TimeSession(TimeMode.LIGHT_TRAILS, null, align = false)
+        val stop = AutoStop(AutoStop.Kind.NO_NEW_LIGHT)
+        var stoppedAt = -1
+        for (i in 0 until 300) {
+            val px = IntArray(W * H) { rgb(6, 6, 10) }
+            if (i < 60) { val cx = 10 + i * 5; for (y in 118..122) for (x in cx - 2..cx + 2) if (x in 0 until W) px[y * W + x] = rgb(255, 120, 60) }
+            session.add(Yuv.fromArgb(px, W, H))
+            if (i % 4 == 3 && stop.feed(session.preview(4)!!.y, i * 33L)) { stoppedAt = i; break }
+        }
+        println("auto-stop: trails ended at frame $stoppedAt (car left at frame 60)")
+        assertTrue("does not stop while light is still arriving", stoppedAt > 60)
+        assertTrue("stops soon after the light is gone", stoppedAt in 61..120)
     }
 }

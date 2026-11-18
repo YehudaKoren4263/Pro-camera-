@@ -63,3 +63,14 @@
 - אף מראה לא הופך את סולם האפורים.
 - מראות שחור-לבן אפורים באמת (לפני טונינג).
 - **גיוון:** כל זוג מראות נבדל לפחות ב-3/255 בממוצע על 512 צבעים. הזוג הקרוב ביותר כרגע הוא Slide 100 מול Positive, ‏5.1. הבדיקה כבר תפסה פעם אחת את Silver 400 ו-Selenium כמעט זהים (1.3), והם תוקנו.
+
+## גרסה 0.6: רזולוציה, אור, זמן
+
+| טכניקה | מקור | אצלנו | הוכחה |
+|---|---|---|---|
+| Super-resolution מרעידות יד | Wronski et al., *Handheld Multi-Frame Super-Resolution*, SIGGRAPH 2019 (Google, research.google). מימוש פתוח ב-IPOL | מתבצע בשלושה שלבים: יישור פירמידה, ואחריו Lucas–Kanade תת-פיקסלי; פיזור בילינארי לרשת ×2; ולבסוף deblur מסוג Van Cittert. | `TimeEngineTest`: ‎+5.81 dB, ‏8192×6144 |
+| קרני שמש נפחיות | Mitchell, *Volumetric Light Scattering as a Post-Process*, GPU Gems 3 פרק 13 | מסכת פליטה יחסית לשיא, ו-72 דגימות רדיאליות | `LightFxTest`: הרווח מתחת לפתח 33.8, מתחת לגזע 1.2 |
+| Glow / Halation / Relight | Adobe MAX 2026 (Lightroom: Glow, Diffusion, Halation; Photoshop: Relight). מקורות: petapixel, glyndewis | מפת אור ברזולוציה של 640px, החלה שורה-שורה ומיזוג screen | אותה בדיקה |
+| עצירה אוטומטית | לא מצאנו אפליקציה שעושה זאת. Spectre (spectre.cam) מבקשת משך קבוע מראש | שני כללי עצירה: CONVERGE כשהשינוי הממוצע ‎< 0.6, ו-NO_NEW_LIGHT כשאין פיקסלים חדשים שהתבהרו | מפל: עצירה אחרי 48 פריימים. מכונית: עצירה בפריים 79, כשהיא יצאה בפריים 60 |
+
+**מגבלה כנה:** חיישן 50MP אמיתי דרך מפתחות ה-remosaic של שיאומי עדיין לא נבדק על הטלפון. Super-res הוא הדרך המובטחת ל-50MP.

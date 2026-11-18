@@ -17,14 +17,20 @@ import app.obscura.camera.time.Blend
 /** Technical abbreviations stay in Latin; words are Hebrew. */
 enum class Control(val label: String) { SHUTTER("תריס"), ISO("ISO"), EV("EV"), WB("WB"), FOCUS("מיקוד") }
 
+/** Open-ended exposure, ended by a second tap on the shutter. */
+const val BULB = -1L
+/** Open-ended exposure, ended by the auto-stop detector (or a tap). */
+const val AUTO = -2L
+
 /** Capture modes. Every mode except PHOTO runs on the time engine. */
 enum class Mode(val title: String, val time: Boolean, val durations: List<Long>, val defaultDuration: Long) {
     PHOTO("צילום", false, emptyList(), 0),
-    NIGHT("לילה", true, listOf(1000, 2000, 3000), 2000),
-    LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000), 2000),
+    NIGHT("לילה", true, listOf(1000, 2000, 3000, AUTO), AUTO),
+    LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000, BULB, AUTO), 2000),
     PANNING("פאנינג", true, listOf(250, 500, 1000), 500),
-    TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000), 4000),
+    TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000, BULB, AUTO), AUTO),
     CLEAN("הסרת אנשים", true, listOf(3000, 6000, 10000), 6000),
+    SUPER("סופר-רזולוציה", true, emptyList(), 0),
     DOUBLE("חשיפה כפולה", true, emptyList(), 0),
 }
 
@@ -85,6 +91,13 @@ data class CameraUiState(
     val comet: Boolean = false,
     /** The stack as it builds, shown over the viewfinder while recording (live composite). */
     val livePreview: ImageBitmap? = null,
+    /** Elapsed time of an open-ended (bulb / auto) recording. */
+    val elapsedMs: Long? = null,
+    /** Total zoom relative to the main lens (0.6x .. 10x), and whether the zoom wheel is open. */
+    val zoom: Float = 1f,
+    val zoomOpen: Boolean = false,
+    /** Light studio over the last photo; null when closed. */
+    val studio: Studio? = null,
 ) {
     val duration get() = durations[mode] ?: mode.defaultDuration
     val activeLens get() = lenses.firstOrNull { it.key == activeLensKey }
@@ -115,4 +128,20 @@ interface CameraActions {
     fun selectBlend(blend: Blend) {}
     fun resetDouble() {}
     fun toggleComet() {}
+    fun toggleZoom() {}
+    fun setZoom(zoom: Float) {}
+    fun pinchZoom(factor: Float) {}
+    fun openStudio() {}
+    fun closeStudio() {}
+    fun studioLight(x: Float, y: Float) {}
+    fun studioParams(p: app.obscura.camera.camera.LightParams) {}
+    fun studioSave() {}
+    fun openInGallery() {}
 }
+
+/** The light studio: a preview of the last photo with light added, and the light's settings. */
+data class Studio(
+    val preview: ImageBitmap? = null,
+    val params: app.obscura.camera.camera.LightParams = app.obscura.camera.camera.LightParams(),
+    val saving: Boolean = false,
+)

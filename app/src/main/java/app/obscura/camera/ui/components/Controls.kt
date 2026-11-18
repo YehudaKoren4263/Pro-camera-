@@ -69,6 +69,7 @@ import app.obscura.camera.ui.CameraUiState
 import app.obscura.camera.ui.Control
 import app.obscura.camera.ui.Dials
 import app.obscura.camera.ui.Mode
+import kotlin.math.roundToInt
 import app.obscura.camera.ui.Ob
 import app.obscura.camera.ui.Txt
 import app.obscura.camera.ui.labelStyleFor
@@ -292,14 +293,15 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                             Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
                             Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, ומה שזז לא משאיר רוח רפאים."
                             Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר בתמונה ייעלם."
+                            Mode.SUPER -> "שמונה פריימים ביד, בלי חצובה: רעידות היד יוצרות פרטים חדשים. התוצאה פי 4 פיקסלים."
                             else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד."
                         },
                         Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2, modifier = Modifier.weight(1f),
                     )
-                    if (s.mode == Mode.LONG) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass)) }
+                    if (s.mode == Mode.LONG && s.duration > 0) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass)) }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    s.mode.durations.forEach { ms -> Chip(ltr(formatDuration(ms)), s.duration == ms) { a.selectDuration(ms) } }
+                    s.mode.durations.forEach { ms -> Chip(formatDuration(ms).let { if (ms > 0) ltr(it) else it }, s.duration == ms) { a.selectDuration(ms) } }
                     if (s.mode == Mode.TRAILS) Chip("שובל שביט", s.comet) { a.toggleComet() }
                 }
             }
@@ -321,6 +323,8 @@ private fun ndMeter(s: CameraUiState): String? {
 }
 
 fun formatDuration(ms: Long): String = when {
+    ms == app.obscura.camera.ui.BULB -> "∞"
+    ms == app.obscura.camera.ui.AUTO -> "אוטו"
     ms < 1000 -> "${ms}ms".let { if (ms == 500L) "½s" else if (ms == 250L) "¼s" else it }
     else -> "${ms / 1000}s"
 }
@@ -359,7 +363,7 @@ fun ModeStrip(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier)
 // ---- Lens selector ---------------------------------------------------------------------------
 
 @Composable
-fun LensSelector(lenses: List<Lens>, activeKey: String?, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+fun LensSelector(lenses: List<Lens>, activeKey: String?, onSelect: (String) -> Unit, modifier: Modifier = Modifier, activeLabel: String? = null) {
     if (lenses.isEmpty()) return
     val haptic = LocalHapticFeedback.current
     Row(
@@ -375,7 +379,7 @@ fun LensSelector(lenses: List<Lens>, activeKey: String?, onSelect: (String) -> U
                 },
                 contentAlignment = Alignment.Center,
             ) {
-                Txt(lens.label, Ob.Value.copy(fontSize = 12.sp, fontWeight = FontWeight.Normal,
+                Txt(if (active && activeLabel != null) activeLabel else lens.label, Ob.Value.copy(fontSize = 12.sp, fontWeight = FontWeight.Normal,
                     color = if (active) Ob.Brass else Ob.Ivory.copy(alpha = 0.8f)))
                 if (lens.hidden || lens.physicalId != null) {
                     // Brass mark: a lens the stock camera list does not give third-party apps.
@@ -396,7 +400,7 @@ fun BottomBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier)
     ) {
         Thumb(s, a)
         Spacer(Modifier.weight(1f))
-        ShutterButton(s.capturing, s.progress, s.mode.time, onShutter = a::shutter)
+        ShutterButton(s.capturing, s.progress, s.mode.time, onShutter = a::shutter, stoppable = s.elapsedMs != null)
         Spacer(Modifier.weight(1f))
         LookButton(s, a)
     }
@@ -423,7 +427,7 @@ private fun Thumb(s: CameraUiState, a: CameraActions) {
  * recording a brass arc that fills with elapsed time.
  */
 @Composable
-fun ShutterButton(capturing: Boolean, progress: Float?, timeMode: Boolean, onShutter: () -> Unit, size: Dp = 78.dp) {
+fun ShutterButton(capturing: Boolean, progress: Float?, timeMode: Boolean, onShutter: () -> Unit, size: Dp = 78.dp, stoppable: Boolean = false) {
     val haptic = LocalHapticFeedback.current
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
@@ -452,7 +456,11 @@ fun ShutterButton(capturing: Boolean, progress: Float?, timeMode: Boolean, onShu
                 .background(Brush.radialGradient(listOf(Color(0xFFF6F2EA), Ob.Ivory, Color(0xFFD9D3C8))), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            if (timeMode) Box(Modifier.size(22.dp).border(1.6.dp, Ob.Brass, CircleShape))
+            when {
+                // Bulb / auto running: a stop square, like a recorder.
+                stoppable -> Box(Modifier.size(20.dp).background(Ob.Signal, RoundedCornerShape(4.dp)))
+                timeMode -> Box(Modifier.size(22.dp).border(1.6.dp, Ob.Brass, CircleShape))
+            }
         }
     }
 }
@@ -488,14 +496,53 @@ fun MessageBar(text: String, onDismiss: () -> Unit, modifier: Modifier = Modifie
 
 /** Status chip over the viewfinder while the engine records or merges. */
 @Composable
-fun BusyChip(text: String, progress: Float?, durationMs: Long, modifier: Modifier = Modifier) {
+fun BusyChip(text: String, progress: Float?, durationMs: Long, modifier: Modifier = Modifier, elapsedMs: Long? = null) {
     Row(
         modifier.background(Ob.Scrim, RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(6.dp).background(if (progress != null) Ob.Signal else Ob.Brass, CircleShape))
         Spacer(Modifier.width(8.dp))
-        val extra = progress?.let { "  " + ltr(String.format(java.util.Locale.US, "%.1fs", it * durationMs / 1000f)) } ?: ""
+        val extra = when {
+            elapsedMs != null -> "  " + ltr(String.format(java.util.Locale.US, "%.1fs", elapsedMs / 1000f))
+            progress != null && durationMs > 0 -> "  " + ltr(String.format(java.util.Locale.US, "%.1fs", progress * durationMs / 1000f))
+            progress != null -> "  " + ltr("${(progress * 100).toInt()}%")
+            else -> ""
+        }
         Txt(text + extra, Ob.LabelHe.copy(color = Ob.Ivory))
+    }
+}
+
+// ---- Zoom wheel ------------------------------------------------------------------------------
+
+fun formatZoom(z: Float): String {
+    val r = (z * 10).roundToInt() / 10f
+    return (if (r % 1f == 0f) "${r.toInt()}" else String.format(java.util.Locale.US, "%.1f", r)).replace("0.", ".") + "×"
+}
+
+/** Zoom stops across the lenses: their native ratios plus the usual photographic steps, to 10x. */
+fun zoomStops(lensRatios: List<Float>): List<Float> {
+    val min = lensRatios.minOrNull() ?: 1f
+    val base = listOf(1f, 1.2f, 1.5f, 1.8f, 2.5f, 3f, 3.5f, 4f, 5f, 6f, 7f, 8f, 10f)
+    return (base + lensRatios.map { (it * 10).roundToInt() / 10f }).filter { it >= min - 0.01f && it <= 10f }.distinct().sorted()
+}
+
+@Composable
+fun ZoomPanel(s: CameraUiState, ratios: List<Float>, a: CameraActions) {
+    val stops = zoomStops(ratios)
+    val sel = stops.indices.minByOrNull { kotlin.math.abs(stops[it] - s.zoom) } ?: 0
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalAlignment = Alignment.CenterVertically) {
+            Txt("זום", Ob.LabelHe.copy(color = Ob.Ivory))
+            Spacer(Modifier.width(10.dp))
+            Txt(ltr(formatZoom(s.zoom)), Ob.Mono.copy(color = Ob.Brass))
+            Spacer(Modifier.width(10.dp))
+            val cropped = ratios.isNotEmpty() && ratios.none { kotlin.math.abs(it - s.zoom) <= 0.05f }
+            Txt(s.activeLens?.let { ltr("${(it.equivMm * s.zoom / (ratios.getOrNull(s.lenses.indexOf(it)) ?: 1f)).toInt()}mm") + if (cropped) " · חיתוך מהחיישן" else " · עדשה אמיתית" } ?: "",
+                Ob.LabelHe.copy(color = Ob.Smoke))
+            Spacer(Modifier.weight(1f))
+            Txt("סגירה", Ob.LabelHe, Modifier.press(a::toggleZoom).padding(6.dp))
+        }
+        Ltr { RulerDial(stops.map(::formatZoom), sel, true, onSelect = { a.setZoom(stops[it]) }) }
     }
 }

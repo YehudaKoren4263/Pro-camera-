@@ -26,6 +26,10 @@ import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
 import app.obscura.camera.time.YuvFrame
 import app.obscura.camera.time.YuvImages
+import app.obscura.camera.time.AutoStop
+import app.obscura.camera.time.SuperResolution
+import app.obscura.camera.camera.LightMap
+import app.obscura.camera.camera.LightParams
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -115,8 +119,41 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     // ---- Actions -------------------------------------------------------------------------------
 
+    /** User tapped a lens: zoom becomes that lens's native ratio, no crop. */
     override fun selectLens(key: String) {
-        if (key == _state.value.activeLensKey || _state.value.capturing) return
+        val s0 = _state.value
+        if (s0.capturing) return
+        if (key == s0.activeLensKey) { toggleZoom(); return }
+        s0.lenses.firstOrNull { it.key == key }?.let { l -> _state.update { it.copy(zoom = ratio(l, it)) } }
+        controller.setZoom(1f)
+        switchLens(key)
+    }
+
+    private fun mainEquiv(s: CameraUiState) =
+        (s.lenses.firstOrNull { it.label == "1×" } ?: s.lenses.minByOrNull { abs(it.equivMm - 24) })?.equivMm ?: 24
+
+    private fun ratio(l: Lens, s: CameraUiState) = l.equivMm.toFloat() / mainEquiv(s)
+
+    override fun toggleZoom() = _state.update { it.copy(zoomOpen = !it.zoomOpen, activeControl = null, looksOpen = false) }
+
+    /**
+     * Zoom across the real lenses: the longest lens not longer than the requested zoom, plus a
+     * centred sensor crop for the rest. 0.6x..10x on the 15T (ultrawide, main, 2x tele).
+     */
+    override fun setZoom(zoom: Float) {
+        val s = _state.value
+        if (s.capturing || s.lenses.isEmpty()) return
+        val sorted = s.lenses.sortedBy { ratio(it, s) }
+        val z = zoom.coerceIn(ratio(sorted.first(), s), 10f)
+        val best = sorted.lastOrNull { ratio(it, s) <= z + 0.02f } ?: sorted.first()
+        _state.update { it.copy(zoom = z) }
+        controller.setZoom(z / ratio(best, s))
+        if (best.key != s.activeLensKey) switchLens(best.key)
+    }
+
+    override fun pinchZoom(factor: Float) = setZoom(_state.value.zoom * factor)
+
+    private fun switchLens(key: String) {
         _state.update { s ->
             val lens = s.lenses.firstOrNull { it.key == key }
             // Sensor ranges differ per lens: keep the creative choices, drop absolute exposure values.
@@ -146,6 +183,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 Mode.NIGHT -> "לילה · רצף פריימים שמתמזג בלי רוחות רפאים של תנועה"
                 Mode.CLEAN -> "הסרת אנשים · עמוד יציב, מי שעובר ייעלם"
                 Mode.DOUBLE -> "חשיפה כפולה · צלם את הפריים הראשון"
+                Mode.SUPER -> "סופר-רזולוציה · ביד, בלי חצובה: רעידות היד יוצרות את הפרטים"
             },
         )
     }
@@ -202,11 +240,57 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     override fun shutter() {
         val s = _state.value
-        if (s.capturing || s.activeLens == null) return
+        if (s.capturing) {
+            // Bulb and auto: a second tap ends the exposure.
+            if (openEnded) controller.stopRecording()
+            return
+        }
+        if (s.activeLens == null) return
         when (s.mode) {
             Mode.PHOTO -> { _state.update { it.copy(capturing = true) }; controller.capture() }
             Mode.DOUBLE -> shootDouble()
+            Mode.SUPER -> shootSuper(s)
             else -> recordTime(s)
+        }
+    }
+
+    @Volatile private var openEnded = false
+
+    /**
+     * Super-resolution: eight frames over ~0.7 s, kept in memory, then aligned to sub-pixel
+     * precision and splatted onto a 2x grid (12.6 MP -> 50 MP on the 15T).
+     */
+    private fun shootSuper(s: CameraUiState) {
+        val frames = ArrayList<YuvFrame>(8)
+        var firstTs = -1L; var nextSlot = 0
+        val window = 700L; val slots = 8
+        _state.update { it.copy(capturing = true, busyText = "אוסף פריימים") }
+        controller.record(window, sink = { f ->
+            if (firstTs < 0) firstTs = f.timestampNs
+            val idx = (((f.timestampNs - firstTs) / 1_000_000L) * slots / window).toInt()
+            if (idx >= nextSlot && frames.size < slots) { frames += f; nextSlot = idx + 1 }
+        }) { stats ->
+            if (frames.size < 3) {
+                _state.update { it.copy(capturing = false, busyText = null) }
+                notify("נקלטו רק ${frames.size} פריימים. נסה שוב.")
+                return@record
+            }
+            try {
+                _state.update { it.copy(busyText = "מיישר ${frames.size} פריימים") }
+                val sr = SuperResolution(2)
+                frames.forEach(sr::add); frames.clear()
+                _state.update { it.copy(busyText = "מרכיב 50MP", progress = 0f) }
+                val out = sr.result { p -> _state.update { it.copy(progress = p) } }
+                val n = sr.count; sr.clear()
+                val look = _state.value.look
+                saveComputed("סופר-רזולוציה", "Obscura super-resolution · ${n} frames · ${out.w}x${out.h}") {
+                    YuvImages.toBitmap(out, stats.orientation, look)
+                }
+            } catch (e: OutOfMemoryError) {
+                frames.clear()
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify("אין מספיק זיכרון לסופר-רזולוציה.")
+            }
         }
     }
 
@@ -221,7 +305,99 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         controller.resetFocus()
     }
 
-    override fun openLastShot() { _state.value.lastShotUri?.let { _events.tryEmit(UiEvent.ViewImage(it)) } }
+    override fun openLastShot() = openStudio()
+    override fun openInGallery() { _state.value.lastShotUri?.let { _events.tryEmit(UiEvent.ViewImage(it)) } }
+
+    // ---- Light studio --------------------------------------------------------------------------
+
+    private var studioBase: Bitmap? = null
+    private var studioJob: Job? = null
+
+    override fun openStudio() {
+        val uri = _state.value.lastShotUri ?: run { notify("עוד אין תמונה. צלם קודם."); return }
+        _state.update { it.copy(studio = Studio()) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val base = runCatching { decodeUpright(uri, 1440) }.getOrNull()
+            if (base == null) { _state.update { it.copy(studio = null) }; notify("לא הצלחתי לפתוח את התמונה"); return@launch }
+            studioBase = base
+            renderStudio()
+        }
+    }
+
+    override fun closeStudio() { studioJob?.cancel(); _state.update { it.copy(studio = null) }; studioBase = null }
+
+    override fun studioLight(x: Float, y: Float) {
+        _state.update { s -> s.studio?.let { s.copy(studio = it.copy(params = it.params.copy(x = x, y = y))) } ?: s }
+        renderStudio()
+    }
+
+    override fun studioParams(p: LightParams) {
+        _state.update { s -> s.studio?.let { s.copy(studio = it.copy(params = p)) } ?: s }
+        renderStudio()
+    }
+
+    /** Re-renders the preview, dropping any render the next change makes obsolete. */
+    private fun renderStudio() {
+        studioJob?.cancel()
+        studioJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(24)
+            val base = studioBase ?: return@launch
+            val p = _state.value.studio?.params ?: return@launch
+            val out = base.copy(Bitmap.Config.ARGB_8888, true)
+            applyLight(out, p)
+            if (isActive) _state.update { s -> s.studio?.let { s.copy(studio = it.copy(preview = out.asImageBitmap())) } ?: s }
+        }
+    }
+
+    override fun studioSave() {
+        val uri = _state.value.lastShotUri ?: return
+        val p = _state.value.studio?.params ?: return
+        _state.update { s -> s.studio?.let { s.copy(studio = it.copy(saving = true)) } ?: s }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val full = decodeUpright(uri, 0) ?: error("decode")
+                applyLight(full, p)
+                val name = "OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date()) + "_light"
+                val saved = MediaSaver.saveBitmap(getApplication(), full, _state.value.look, name, "Obscura light studio", lookApplied = true)
+                val thumb = Bitmap.createScaledBitmap(full, (full.width / 16).coerceAtLeast(1), (full.height / 16).coerceAtLeast(1), true)
+                full.recycle()
+                _state.update { it.copy(studio = null, lastShot = thumb.asImageBitmap(), lastShotUri = saved ?: it.lastShotUri, lastShotHasRaw = false) }
+                studioBase = null
+                notify(if (saved != null) "התאורה נשמרה כתמונה חדשה" else "השמירה נכשלה")
+            } catch (e: Throwable) {
+                _state.update { s -> s.studio?.let { s.copy(studio = it.copy(saving = false)) } ?: s }
+                notify("השמירה נכשלה: ${e.message}")
+            }
+        }
+    }
+
+    /** Light map at small size, then applied row by row to the bitmap in place. */
+    private fun applyLight(bmp: Bitmap, p: LightParams) {
+        if (p.isOff) return
+        val w = bmp.width; val h = bmp.height
+        val (mw, mh) = LightMap.mapSize(w, h)
+        val small = Bitmap.createScaledBitmap(bmp, mw, mh, true)
+        val px = IntArray(mw * mh); small.getPixels(px, 0, mw, 0, 0, mw, mh); if (small !== bmp) small.recycle()
+        val map = LightMap.build(px, mw, mh, p)
+        val row = IntArray(w)
+        for (y in 0 until h) { bmp.getPixels(row, 0, w, 0, y, w, 1); map.applyRow(row, y, w, h); bmp.setPixels(row, 0, w, 0, y, w, 1) }
+    }
+
+    /** Decodes a photo upright (EXIF rotation applied), mutable, long side at most [maxSide] (0 = full). */
+    private fun decodeUpright(uri: Uri, maxSide: Int): Bitmap? {
+        val cr = getApplication<Application>().contentResolver
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        cr.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        if (maxSide > 0) while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample; inMutable = true; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val bmp = cr.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, opts) } ?: return null
+        val rot = runCatching { cr.openInputStream(uri)?.use { androidx.exifinterface.media.ExifInterface(it).rotationDegrees } ?: 0 }.getOrDefault(0)
+        if (rot == 0) return bmp
+        val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, android.graphics.Matrix().apply { postRotate(rot.toFloat()) }, true)
+        bmp.recycle()
+        return if (r.isMutable) r else r.copy(Bitmap.Config.ARGB_8888, true)
+    }
     override fun toggleSensor() = _state.update { it.copy(sensorOpen = !it.sensorOpen) }
 
     // ---- Time modes ----------------------------------------------------------------------------
@@ -246,16 +422,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         // Panning locks onto the tapped subject (centre if none), mapped into sensor space.
         val subject = if (mode == TimeMode.PANNING) toSensor(s.focusPoint ?: Offset(0.5f, 0.5f), orientation).let { Roi.around(it.x, it.y) } else null
         val session = TimeSession(mode, subject)
-        val duration = s.duration
-        _state.update { it.copy(capturing = true, progress = 0f, busyText = "מקליט") }
+        val chosen = s.duration
+        openEnded = chosen == BULB || chosen == AUTO
+        // Auto: the detector ends it; the cap only guards against a scene that never settles.
+        val cap = when (mode) { TimeMode.NIGHT -> 8_000L; TimeMode.LIGHT_TRAILS, TimeMode.COMET -> 120_000L; else -> 30_000L }
+        val duration = when (chosen) { BULB -> 0L; AUTO -> cap; else -> chosen }
+        val autoStop = if (chosen == AUTO) AutoStop(
+            if (mode == TimeMode.LIGHT_TRAILS || mode == TimeMode.COMET) AutoStop.Kind.NO_NEW_LIGHT else AutoStop.Kind.CONVERGE,
+        ) else null
+        var autoStopped = false
+        val t0 = System.currentTimeMillis()
+        _state.update { it.copy(capturing = true, progress = if (openEnded) null else 0f, elapsedMs = if (openEnded) 0L else null,
+            busyText = when (chosen) { BULB -> "מקליט · הקש לעצירה"; AUTO -> "מקליט · אוטו"; else -> "מקליט" }) }
         progressJob?.cancel()
         progressJob = viewModelScope.launch {
-            val t0 = System.currentTimeMillis()
             while (isActive) {
-                val p = ((System.currentTimeMillis() - t0).toFloat() / duration).coerceAtMost(1f)
-                _state.update { it.copy(progress = p) }
-                if (p >= 1f) break
-                delay(40)
+                val el = System.currentTimeMillis() - t0
+                if (openEnded) _state.update { it.copy(elapsedMs = el) }
+                else {
+                    val p = (el.toFloat() / duration).coerceAtMost(1f)
+                    _state.update { it.copy(progress = p) }
+                    if (p >= 1f) break
+                }
+                delay(if (openEnded) 100 else 40)
             }
         }
         // Clean plate needs time between frames (people must move): nine frames spread over the
@@ -280,12 +469,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                     session.preview(8)?.let { p ->
                         val bmp = runCatching { YuvImages.toBitmap(p, orientation, look) }.getOrNull()
                         if (bmp != null) _state.update { it.copy(livePreview = bmp.asImageBitmap()) }
+                        // Auto: the algorithm watches the composite settle and ends the exposure.
+                        if (autoStop != null && !autoStopped && autoStop.feed(p.y, now - t0)) {
+                            autoStopped = true
+                            controller.stopRecording()
+                        }
                     }
                 }
             }
         }) { stats ->
             // Runs on the processor thread, after every frame was stacked.
             progressJob?.cancel()
+            openEnded = false
+            val tookMs = System.currentTimeMillis() - t0
+            _state.update { it.copy(elapsedMs = null) }
             if (session.frames < 2) {
                 _state.update { it.copy(capturing = false, progress = null, busyText = null, livePreview = null) }
                 notify("נקלטו רק ${session.frames} פריימים. נסה זמן ארוך יותר או יותר אור.")
@@ -296,10 +493,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 TimeMode.PANNING -> "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; TimeMode.COMET -> "שובל שביט"
                 TimeMode.NIGHT -> "לילה"; TimeMode.CLEAN_PLATE -> "הסרת אנשים"; else -> "חשיפה ארוכה"
             }
-            val description = "Obscura $label · ${session.frames} frames · ${stats.dropped} dropped · ${duration} ms · max shift ${session.maxShift}px"
+            val description = "Obscura $label · ${session.frames} frames · ${stats.dropped} dropped · ${tookMs} ms · max shift ${session.maxShift}px"
             val look = _state.value.look
             saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation, look) }
-            if (stats.dropped > session.frames) notify("$label · ${session.frames} פריימים (${stats.dropped} נזרקו כדי לשמור על קצב)")
+            if (autoStopped) notify("האלגוריתם עצר אחרי ${"%.1f".format(tookMs / 1000f)} ש׳: התמונה התייצבה")
+            else if (stats.dropped > session.frames) notify("$label · ${session.frames} פריימים (${stats.dropped} נזרקו כדי לשמור על קצב)")
         }
     }
 

@@ -157,17 +157,17 @@ enum class Combine { MEAN, LIGHTEN }
  */
 class Stacker(val w: Int, val h: Int, private val combine: Combine, private val decay: Float = 1f) : Stack {
     companion object {
-        /** Mean sums are 16-bit: 255 × 256 = 65280. Frames past this are ignored, not overflowed. */
-        const val MAX_MEAN_FRAMES = 256
+        /** Mean sums are 32-bit: 255 × 8 million frames would still fit; this cap is hours of 30 fps. */
+        const val MAX_MEAN_FRAMES = 1_000_000
 
         /** 4x4 Bayer matrix, used to dither the fractional part of the mean into 8 bits. */
         private val BAYER = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
     }
 
     private val cw = w / 2; private val ch = h / 2
-    private val sy = CharArray(w * h)
-    private val su = CharArray(cw * ch)
-    private val sv = CharArray(cw * ch)
+    private val sy = IntArray(w * h)
+    private val su = IntArray(cw * ch)
+    private val sv = IntArray(cw * ch)
     /** LIGHTEN only: the brightest 2x2 luma sum seen per chroma site (chroma follows it). */
     private val blockLuma: ShortArray? = if (combine == Combine.LIGHTEN) ShortArray(cw * ch) { -1 } else null
     override var frames = 0; private set
@@ -185,9 +185,9 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
         for (y in max(0, -dy) until min(h, h - dy)) {
             val ro = y * w; val rf = (y + dy) * w + dx
             if (combine == Combine.MEAN) {
-                for (x in x0 until x1) sy[ro + x] = (sy[ro + x].code + (fy[rf + x].toInt() and 0xFF)).toChar()
+                for (x in x0 until x1) sy[ro + x] += fy[rf + x].toInt() and 0xFF
             } else {
-                for (x in x0 until x1) { val v = fy[rf + x].toInt() and 0xFF; if (v > sy[ro + x].code) sy[ro + x] = v.toChar() }
+                for (x in x0 until x1) { val v = fy[rf + x].toInt() and 0xFF; if (v > sy[ro + x]) sy[ro + x] = v }
             }
         }
 
@@ -197,8 +197,8 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
             val ro = y * cw; val rf = (y + cdy) * cw + cdx
             if (combine == Combine.MEAN) {
                 for (x in cx0 until cx1) {
-                    su[ro + x] = (su[ro + x].code + (fu[rf + x].toInt() and 0xFF)).toChar()
-                    sv[ro + x] = (sv[ro + x].code + (fv[rf + x].toInt() and 0xFF)).toChar()
+                    su[ro + x] += fu[rf + x].toInt() and 0xFF
+                    sv[ro + x] += fv[rf + x].toInt() and 0xFF
                 }
             } else {
                 val bl = blockLuma!!
@@ -210,8 +210,8 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
                         (fy[r0 + w].toInt() and 0xFF) + (fy[r0 + w + 1].toInt() and 0xFF)
                     if (b > bl[ro + x]) {
                         bl[ro + x] = b.toShort()
-                        su[ro + x] = (fu[rf + x].toInt() and 0xFF).toChar()
-                        sv[ro + x] = (fv[rf + x].toInt() and 0xFF).toChar()
+                        su[ro + x] = fu[rf + x].toInt() and 0xFF
+                        sv[ro + x] = fv[rf + x].toInt() and 0xFF
                     }
                 }
             }
@@ -225,14 +225,14 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
      */
     private fun fade() {
         val q = (decay * 256).roundToInt()
-        for (i in sy.indices) sy[i] = ((sy[i].code * q) shr 8).toChar()
+        for (i in sy.indices) sy[i] = (sy[i] * q) shr 8
         blockLuma?.let { bl -> for (i in bl.indices) if (bl[i] > 0) bl[i] = ((bl[i] * q) shr 8).toShort() }
     }
 
     override fun preview(step: Int): YuvFrame {
         val n = if (combine == Combine.MEAN) max(1, min(frames, MAX_MEAN_FRAMES)) else 1
-        return sample(w, h, step, { x, y -> sy[y * w + x].code / n },
-            { x, y -> val i = (y / 2).coerceAtMost(ch - 1) * cw + (x / 2).coerceAtMost(cw - 1); su[i].code / n to sv[i].code / n })
+        return sample(w, h, step, { x, y -> sy[y * w + x] / n },
+            { x, y -> val i = (y / 2).coerceAtMost(ch - 1) * cw + (x / 2).coerceAtMost(cw - 1); su[i] / n to sv[i] / n })
     }
 
     /** The merged frame, cropped to the region all frames covered, dithered to 8 bits. */
@@ -249,7 +249,7 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
         for (y in 0 until oh) {
             val src = (y + top) * w + left; val dst = y * ow; val drow = (y and 3) * 4
             for (x in 0 until ow) {
-                val sum = sy[src + x].code
+                val sum = sy[src + x]
                 oy[dst + x] = (if (n == 1) sum else (sum * 16 + BAYER[drow + (x and 3)] * n + n / 2) / den).coerceIn(0, 255).toByte()
             }
         }
@@ -261,10 +261,10 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine, private val 
                 if (combine == Combine.LIGHTEN && blockLuma!![src + x] < 0) {
                     ou[dst + x] = 128.toByte(); ov[dst + x] = 128.toByte()
                 } else if (n == 1) {
-                    ou[dst + x] = su[src + x].code.toByte(); ov[dst + x] = sv[src + x].code.toByte()
+                    ou[dst + x] = su[src + x].toByte(); ov[dst + x] = sv[src + x].toByte()
                 } else {
-                    ou[dst + x] = ((su[src + x].code * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
-                    ov[dst + x] = ((sv[src + x].code * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
+                    ou[dst + x] = ((su[src + x] * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
+                    ov[dst + x] = ((sv[src + x] * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
                 }
             }
         }

@@ -35,6 +35,10 @@ import app.obscura.camera.ui.components.BusyChip
 import app.obscura.camera.ui.components.Ltr
 import app.obscura.camera.ui.components.ModeStrip
 import app.obscura.camera.ui.components.TimePanel
+import app.obscura.camera.ui.components.ZoomPanel
+import app.obscura.camera.ui.components.StudioPanel
+import app.obscura.camera.ui.components.formatZoom
+import androidx.compose.foundation.gestures.detectTransformGestures
 import app.obscura.camera.ui.components.DialPanel
 import app.obscura.camera.ui.components.FocusReticle
 import app.obscura.camera.ui.components.GridOverlay
@@ -72,6 +76,10 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
             SensorPanel(s.report, s.hardware, s.activeLens?.cameraId, a)
         }
 
+        AnimatedVisibility(visible = s.studio != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+            s.studio?.let { StudioPanel(it, a) }
+        }
+
         val msg = s.message
         AnimatedVisibility(
             visible = msg != null,
@@ -100,7 +108,10 @@ private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable 
         }
 
         Box(
-            Modifier.fillMaxSize().pointerInput(Unit) {
+            Modifier.fillMaxSize()
+                // Pinch to zoom across the real lenses; single taps stay focus taps.
+                .pointerInput(Unit) { detectTransformGestures { _, _, zoom, _ -> if (zoom != 1f) a.pinchZoom(zoom) } }
+                .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { p -> a.tapFocus(p.x / size.width, p.y / size.height) },
                     onLongPress = { a.resetFocus() },
@@ -115,9 +126,11 @@ private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable 
             HistogramPlate(s.histogram, Modifier.align(Alignment.TopEnd).padding(10.dp))
         }
         ModeTag(s, Modifier.align(Alignment.TopStart).padding(10.dp))
-        s.busyText?.let { BusyChip(it, s.progress, s.duration, Modifier.align(Alignment.TopCenter).padding(top = 58.dp)) }
+        s.busyText?.let { BusyChip(it, s.progress, s.duration, Modifier.align(Alignment.TopCenter).padding(top = 58.dp), s.elapsedMs) }
 
-        LensSelector(s.lenses, s.activeLensKey, a::selectLens, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
+        val activeRatio = s.activeLens?.let { l -> lensRatios(s).let { r -> r[s.lenses.indexOf(l)] } }
+        LensSelector(s.lenses, s.activeLensKey, a::selectLens, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            activeLabel = if (activeRatio != null && kotlin.math.abs(s.zoom - activeRatio) > 0.05f) formatZoom(s.zoom) else null)
         ShutterFlash(s.shutterTick)
     }
 }
@@ -128,6 +141,7 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
     val kind = when {
         s.activeControl != null -> "dial"
         s.looksOpen -> "looks"
+        s.zoomOpen -> "zoom"
         s.mode.time -> "time"
         else -> "info"
     }
@@ -146,6 +160,7 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
                 "dial" -> DialPanel(control!!, s, a)
                 "looks" -> LookStrip(s, a)
                 "time" -> TimePanel(s, a)
+                "zoom" -> ZoomPanel(s, lensRatios(s), a)
                 else -> InfoLine(s)
             }
         }
@@ -172,4 +187,10 @@ private fun ModeTag(s: CameraUiState, modifier: Modifier) {
             Ob.Label.copy(color = if (mode == "P") Ob.Ivory else Ob.Brass),
         )
     }
+}
+
+/** Each lens's zoom ratio relative to the main (1x) lens, in lens order. */
+fun lensRatios(s: CameraUiState): List<Float> {
+    val main = (s.lenses.firstOrNull { it.label == "1×" } ?: s.lenses.minByOrNull { kotlin.math.abs(it.equivMm - 24) })?.equivMm ?: 24
+    return s.lenses.map { it.equivMm.toFloat() / main }
 }

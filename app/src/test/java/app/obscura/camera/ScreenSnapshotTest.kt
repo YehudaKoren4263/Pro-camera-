@@ -163,4 +163,28 @@ class ScreenSnapshotTest {
         c.drawRect(22f, 92f, 98f, 160f, android.graphics.Paint().apply { color = android.graphics.Color.rgb(20, 20, 22) })
         shot(base.copy(mode = Mode.DOUBLE, jpegMp = 4.9f, rawActive = false, doubleGhost = bmp.asImageBitmap(), blend = Blend.SCREEN))
     }
+
+    @Test fun superResolution() = shot(base.copy(mode = Mode.SUPER, jpegMp = 12.6f, rawActive = false))
+
+    @Test fun zoomWheel() = shot(base.copy(zoom = 3.5f, zoomOpen = true))
+
+    @Test fun bulbRecording() = shot(
+        base.copy(mode = Mode.LONG, durations = mapOf(Mode.LONG to app.obscura.camera.ui.BULB), jpegMp = 12.6f, rawActive = false, capturing = true,
+            progress = null, elapsedMs = 12_300, busyText = "חשיפה חופשית"),
+    )
+
+    @Test fun autoTrails() = shot(base.copy(mode = Mode.TRAILS, durations = mapOf(Mode.TRAILS to app.obscura.camera.ui.AUTO), jpegMp = 12.6f, rawActive = false))
+
+    @Test fun lightStudio() {
+        // The forest from the light test, with the studio's own renderer.
+        val w = 300; val h = 400
+        val px = IntArray(w * h) { i -> val x = i % w; val y = i / w
+            val trunk = (x / 22) % 2 == 0 && y in 40..330
+            when { trunk -> 0xFF14120F.toInt(); y < 200 -> 0xFFE1D7BE.toInt(); else -> 0xFF3A3C2C.toInt() } }
+        val p = app.obscura.camera.camera.LightParams(x = 0.55f, y = 0.06f, rays = 0.8f, glow = 0.35f, halation = 0.2f, relight = 0.4f, warmth = 0.75f)
+        val map = app.obscura.camera.camera.LightMap.build(px, w, h, p); val row = IntArray(w)
+        for (y in 0 until h) { System.arraycopy(px, y * w, row, 0, w); map.applyRow(row, y, w, h); System.arraycopy(row, 0, px, y * w, w) }
+        val bmp = android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        shot(base.copy(studio = app.obscura.camera.ui.Studio(preview = bmp.asImageBitmap(), params = p)))
+    }
 }

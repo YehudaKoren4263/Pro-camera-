@@ -86,6 +86,7 @@ class CameraController(private val context: Context, private val listener: Liste
     private var lastAutoExposure: Long? = null
     private var lastReadoutAt = 0L
     private var pending: PendingShot? = null
+    private var zoomRatio = 1f
 
     @Volatile var deviceOrientation: Int = 0
     @Volatile var look: Look = Looks.NEUTRAL
@@ -319,6 +320,14 @@ class CameraController(private val context: Context, private val listener: Liste
             if ((ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) b.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(r))
         }
 
+        if (zoomRatio > 1.01f) {
+            ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let { a ->
+                val cw = (a.width() / zoomRatio).toInt(); val chh = (a.height() / zoomRatio).toInt()
+                val l = a.left + (a.width() - cw) / 2; val t = a.top + (a.height() - chh) / 2
+                b.set(CaptureRequest.SCALER_CROP_REGION, Rect(l, t, l + cw, t + chh))
+            }
+        }
+
         if (natural) {
             // Research §2 #2: no sharpening halos, minimal smearing. Only where the HAL offers it.
             val edges = ch.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)?.toSet() ?: emptySet()
@@ -372,8 +381,15 @@ class CameraController(private val context: Context, private val listener: Liste
         val rec = Recording(sink, single = false, onDone = onDone)
         recording = rec
         startRepeating()
-        handler.postDelayed({ finish(rec) }, durationMs)
+        // durationMs <= 0: open-ended (bulb or auto), ended by stopRecording(); 30 min safety cap.
+        handler.postDelayed({ finish(rec) }, if (durationMs > 0) durationMs else 30 * 60_000L)
     }
+
+    /** Ends an open-ended recording now (bulb tap, or auto-stop deciding the image is done). */
+    fun stopRecording() = handler.post { recording?.takeIf { !it.single }?.let { finish(it) } }
+
+    /** Digital zoom on top of the active lens: a centred crop of the sensor. 1 = none. */
+    fun setZoom(ratio: Float) = handler.post { zoomRatio = ratio.coerceAtLeast(1f); startRepeating() }
 
     /** Captures exactly one YUV frame (double exposure). */
     fun grab(sink: (YuvFrame) -> Unit, onDone: (BurstStats) -> Unit) = handler.post {
