@@ -35,24 +35,24 @@ object Dials {
         Control.ISO -> {
             val l = isoLadder(s)
             DialModel(listOf("AUTO") + l.map { it.toString() }, s.settings.iso?.let { l.indexOf(it) + 1 } ?: 0,
-                enabled = manualSensor(s), note = if (!manualSensor(s)) "This lens has no manual sensor control" else null)
+                enabled = manualSensor(s), note = if (!manualSensor(s)) "לעדשה הזו אין שליטה ידנית בחיישן" else null)
         }
         Control.SHUTTER -> {
             val l = shutterLadder(s)
             DialModel(listOf("AUTO") + l.map(ExposureMath::formatShutter), s.settings.shutterNs?.let { l.indexOf(it) + 1 } ?: 0,
-                enabled = manualSensor(s), note = if (!manualSensor(s)) "This lens has no manual sensor control" else null)
+                enabled = manualSensor(s), note = if (!manualSensor(s)) "לעדשה הזו אין שליטה ידנית בחיישן" else null)
         }
         Control.EV -> {
             val r = evRange(s); val st = evStep(s)
             DialModel(r.map { ExposureMath.formatEv(it * st) }, s.settings.evIndex - r.first,
-                enabled = !s.settings.manualExposure, note = if (s.settings.manualExposure) "Exposure is manual" else null)
+                enabled = !s.settings.manualExposure, note = if (s.settings.manualExposure) "החשיפה ידנית" else null)
         }
         Control.WB -> DialModel(WhiteBalance.entries.map { if (it == WhiteBalance.AUTO) "AUTO" else it.kelvin }, s.settings.wb.ordinal)
         Control.FOCUS -> {
             val l = focusLadder(s)
             val idx = s.settings.focusDiopters?.let { d -> l.indices.minByOrNull { kotlin.math.abs(l[it] - d) }?.plus(1) } ?: 0
             DialModel(listOf("AF") + l.map(ExposureMath::formatFocus), idx,
-                enabled = l.isNotEmpty() && manualSensor(s), note = if (l.isEmpty()) "Fixed-focus lens" else null)
+                enabled = l.isNotEmpty() && manualSensor(s), note = if (l.isEmpty()) "עדשה בפוקוס קבוע" else null)
         }
     }
 

@@ -35,34 +35,45 @@ data class Roi(val left: Float, val top: Float, val right: Float, val bottom: Fl
     }
 }
 
-/** A luma pyramid: level 0 is full resolution, each next level is half size (box filtered). */
+/**
+ * A luma pyramid. Level 0 is the frame's own luma bytes (no copy); each next level is half
+ * size, box filtered, as ints.
+ */
 class Pyramid(frame: YuvFrame, minWidth: Int = 96) {
-    val widths = mutableListOf<Int>()
-    val heights = mutableListOf<Int>()
-    val levels = mutableListOf<IntArray>()
+    val full: ByteArray = frame.y
+    val widths = mutableListOf(frame.w)
+    val heights = mutableListOf(frame.h)
+    /** levels[0] is unused (null); level 0 lives in [full]. */
+    val levels = mutableListOf<IntArray?>(null)
 
     init {
         var w = frame.w; var h = frame.h
-        var cur = IntArray(w * h) { frame.y[it].toInt() and 0xFF }
-        levels += cur; widths += w; heights += h
+        var prev: IntArray? = null
         while (w / 2 >= minWidth) {
             val nw = w / 2; val nh = h / 2
             val next = IntArray(nw * nh)
+            val p = prev
             for (yy in 0 until nh) {
                 val r0 = (2 * yy) * w; val r1 = r0 + w
                 for (xx in 0 until nw) {
                     val x2 = 2 * xx
-                    next[yy * nw + xx] = (cur[r0 + x2] + cur[r0 + x2 + 1] + cur[r1 + x2] + cur[r1 + x2 + 1]) shr 2
+                    next[yy * nw + xx] = if (p == null) {
+                        ((full[r0 + x2].toInt() and 0xFF) + (full[r0 + x2 + 1].toInt() and 0xFF) +
+                            (full[r1 + x2].toInt() and 0xFF) + (full[r1 + x2 + 1].toInt() and 0xFF)) shr 2
+                    } else (p[r0 + x2] + p[r0 + x2 + 1] + p[r1 + x2] + p[r1 + x2 + 1]) shr 2
                 }
             }
-            cur = next; w = nw; h = nh
-            levels += cur; widths += w; heights += h
+            prev = next; w = nw; h = nh
+            levels += next; widths += w; heights += h
         }
     }
     val top get() = levels.size - 1
 }
 
 object Align {
+    /** Samples per SAD evaluation. Bounds the cost per frame whatever the resolution. */
+    private const val SAMPLES = 40_000
+
     /**
      * Translation (dx, dy) in full-resolution pixels such that cur(x + dx, y + dy) ≈ ref(x, y)
      * inside the ROI. Coarse-to-fine SAD search over the pyramid.
@@ -73,14 +84,16 @@ object Align {
         var dx = 0; var dy = 0
         for (lvl in ref.top downTo 0) {
             if (lvl != ref.top) { dx *= 2; dy *= 2 }
-            val radius = if (lvl == ref.top) coarseRadius else 2
+            val radius = if (lvl == ref.top) coarseRadius else 1
             val w = ref.widths[lvl]; val h = ref.heights[lvl]
             val x0 = (roi.left * w).toInt(); val x1 = (roi.right * w).toInt()
             val y0 = (roi.top * h).toInt(); val y1 = (roi.bottom * h).toInt()
-            val step = if (lvl == 0) 2 else 1
+            val area = (x1 - x0).toLong() * (y1 - y0)
+            val step = maxOf(1, kotlin.math.sqrt(area.toDouble() / SAMPLES).toInt())
             var best = Long.MAX_VALUE; var bx = dx; var by = dy
             for (sy in dy - radius..dy + radius) for (sx in dx - radius..dx + radius) {
-                val sad = sad(ref.levels[lvl], cur.levels[lvl], w, h, x0, y0, x1, y1, sx, sy, step)
+                val sad = if (lvl == 0) sadBytes(ref.full, cur.full, w, h, x0, y0, x1, y1, sx, sy, step)
+                else sad(ref.levels[lvl]!!, cur.levels[lvl]!!, w, h, x0, y0, x1, y1, sx, sy, step)
                 if (sad < best) { best = sad; bx = sx; by = sy }
             }
             dx = bx; dy = by
@@ -106,6 +119,26 @@ object Align {
             y += step
         }
         // Normalise by samples so shifts near the border are not favoured.
+        return if (n == 0) Long.MAX_VALUE else s * 1024 / n
+    }
+
+    private fun sadBytes(a: ByteArray, b: ByteArray, w: Int, h: Int, x0: Int, y0: Int, x1: Int, y1: Int,
+                         sx: Int, sy: Int, step: Int): Long {
+        var s = 0L; var n = 0
+        var y = y0
+        while (y < y1) {
+            val by = y + sy
+            if (by in 0 until h) {
+                var x = x0
+                val ra = y * w; val rb = by * w
+                while (x < x1) {
+                    val bx = x + sx
+                    if (bx in 0 until w) { s += abs((a[ra + x].toInt() and 0xFF) - (b[rb + bx].toInt() and 0xFF)); n++ }
+                    x += step
+                }
+            }
+            y += step
+        }
         return if (n == 0) Long.MAX_VALUE else s * 1024 / n
     }
 }

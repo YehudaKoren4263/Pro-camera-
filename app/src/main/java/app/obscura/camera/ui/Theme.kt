@@ -49,11 +49,28 @@ object Ob {
         fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Normal,
         fontSize = 10.sp, letterSpacing = 0.4.sp, color = Ash, fontFeatureSettings = numeric,
     )
+    /**
+     * Hebrew label. Hebrew has no capitals, and wide tracking breaks its letterforms, so the
+     * hierarchy comes from weight and size instead of uppercase and letter-spacing.
+     */
+    val LabelHe = TextStyle(
+        fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Medium,
+        fontSize = 11.sp, letterSpacing = 0.sp, color = Ash,
+    )
     val Wordmark = TextStyle(
         fontFamily = FontFamily.Serif, fontWeight = FontWeight.Normal,
         fontSize = 14.sp, letterSpacing = 5.sp, color = Ivory,
     )
 }
+
+/**
+ * Isolates a left-to-right run (1/250, +⅓, ƒ1.8, 5500K) inside right-to-left text, so the
+ * bidi algorithm cannot reorder it. Unicode LRI ... PDI.
+ */
+fun ltr(s: String) = "\u2066$s\u2069"
+
+/** Picks the label style: Latin technical terms keep tracked caps, Hebrew gets LabelHe. */
+fun labelStyleFor(text: String) = if (text.any { it in '\u0590'..'\u05FF' }) Ob.LabelHe else Ob.Label
 
 /** Text without Material defaults: the style is always explicit. */
 @androidx.compose.runtime.Composable

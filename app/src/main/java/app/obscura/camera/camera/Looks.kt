@@ -57,26 +57,26 @@ object Looks {
         )
     }
 
-    val NEUTRAL = Look("neutral", "Neutral", "Sensor truth. No look.",
+    val NEUTRAL = Look("neutral", "Neutral", "אמת החיישן. בלי מראה.",
         tone(1f, 1f, 1f, 0f, 1f), listOf(0xFF8E897F, 0xFFB9B3A8, 0xFFEDE8DF))
 
-    val IVORY = Look("ivory400", "Ivory 400", "Warm skin, soft shoulder, lifted blacks.",
+    val IVORY = Look("ivory400", "Ivory 400", "עור חם, היילייטים רכים, שחורים מורמים.",
         concat(tone(1.06f, 1.0f, 0.92f, 10f, 0.9f), saturation(0.86f)),
         listOf(0xFFD9B28C, 0xFFE8CFB0, 0xFF9DB0A6))
 
-    val CHROMA = Look("chroma100", "Chroma 100", "Dense colour, punchy mids, fine grain.",
+    val CHROMA = Look("chroma100", "Chroma 100", "צבע דחוס, טונים בינוניים חזקים.",
         concat(tone(1.02f, 1.0f, 1.0f, -4f, 1.12f), saturation(1.32f)),
         listOf(0xFFC8402E, 0xFF2F6FA8, 0xFFE3B23C))
 
-    val SLIDE = Look("slide50", "Slide 50", "Deep shadows, saturated reversal.",
+    val SLIDE = Look("slide50", "Slide 50", "צללים עמוקים, שקופית רוויה.",
         concat(tone(0.98f, 1.02f, 1.04f, -10f, 1.2f), saturation(1.45f)),
         listOf(0xFF1F5F8B, 0xFF2E8A57, 0xFFB8322A))
 
-    val TUNGSTEN = Look("tungsten800", "Tungsten 800", "Cool night balance, cinematic.",
+    val TUNGSTEN = Look("tungsten800", "Tungsten 800", "איזון לילה קר, קולנועי.",
         concat(tone(0.9f, 0.98f, 1.12f, 6f, 1.05f), saturation(0.95f)),
         listOf(0xFF2B4C6F, 0xFF4F8FA0, 0xFFE07A4F))
 
-    val SILVER = Look("silver400", "Silver 400", "Panchromatic black and white.",
+    val SILVER = Look("silver400", "Silver 400", "שחור-לבן פנכרומטי.",
         concat(tone(1f, 1f, 1f, -6f, 1.18f), saturation(0f)),
         listOf(0xFF1C1C1C, 0xFF7A7A7A, 0xFFE6E6E6))
 

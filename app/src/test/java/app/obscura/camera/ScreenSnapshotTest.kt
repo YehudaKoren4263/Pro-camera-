@@ -22,6 +22,13 @@ import app.obscura.camera.ui.CameraScreen
 import app.obscura.camera.ui.CameraUiState
 import app.obscura.camera.ui.Control
 import app.obscura.camera.ui.HistogramMath
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import app.obscura.camera.time.Blend
+import app.obscura.camera.ui.Mode
 import org.junit.Rule
 import org.junit.Test
 import kotlin.math.sin
@@ -67,9 +74,9 @@ class ScreenSnapshotTest {
     )
     private val hardware = app.obscura.camera.camera.DeepProbe.Summary(
         rows = listOf(
-            "SOC" to "Sample SoC", "GPU" to "Sample GPU", "VULKAN" to "1.3", "THERMAL" to "0.31 headroom",
-            "ADPF" to "performance hints available", "GYRO" to "500 Hz · sample gyroscope",
-            "HAPTICS" to "CLICK · TICK · LOW_TICK · QUICK_RISE", "DISPLAY" to "Wide gamut · HDR HDR10/HLG · 120 Hz",
+            "SOC" to "Sample SoC", "GPU" to "Sample GPU", "VULKAN" to "1.3", "THERMAL" to "מרווח 0.31",
+            "ADPF" to "זמין", "GYRO" to "500 Hz · sample gyroscope",
+            "HAPTICS" to "CLICK · TICK · LOW_TICK · QUICK_RISE", "DISPLAY" to "צבע רחב · HDR HDR10/HLG · 120 Hz",
         ),
         extensions = mapOf("0" to listOf("NIGHT", "HDR", "BOKEH")),
         controllableVendorKeys = mapOf("0" to 41, "5" to 57),
@@ -117,23 +124,39 @@ class ScreenSnapshotTest {
         }
     }
 
-    @Test fun main() = paparazzi.snapshot { CameraScreen(base, actions, scene) }
-
-    @Test fun shutterDial() = paparazzi.snapshot {
-        CameraScreen(
-            base.copy(
-                activeControl = Control.SHUTTER,
-                settings = ManualSettings(shutterNs = ExposureMath.shutterNs(1, 500), iso = 200, wb = WhiteBalance.DAYLIGHT),
-                focusPoint = androidx.compose.ui.geometry.Offset(0.62f, 0.5f),
-                live = base.live.copy(afLocked = true),
-            ),
-            actions, scene,
-        )
+    /** As the app runs it: the whole UI right to left. */
+    private fun shot(state: CameraUiState) = paparazzi.snapshot {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) { CameraScreen(state, actions, scene) }
     }
 
-    @Test fun looks() = paparazzi.snapshot {
-        CameraScreen(base.copy(looksOpen = true, look = Looks.IVORY, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f), actions, scene)
-    }
+    @Test fun main() = shot(base)
 
-    @Test fun sensorPanel() = paparazzi.snapshot { CameraScreen(base.copy(sensorOpen = true), actions, scene) }
+    @Test fun shutterDial() = shot(
+        base.copy(
+            activeControl = Control.SHUTTER,
+            settings = ManualSettings(shutterNs = ExposureMath.shutterNs(1, 500), iso = 200, wb = WhiteBalance.DAYLIGHT),
+            focusPoint = androidx.compose.ui.geometry.Offset(0.62f, 0.5f),
+            live = base.live.copy(afLocked = true),
+        ),
+    )
+
+    @Test fun looks() = shot(base.copy(looksOpen = true, look = Looks.IVORY, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f))
+
+    @Test fun sensorPanel() = shot(base.copy(sensorOpen = true))
+
+    @Test fun longExposureRecording() = shot(
+        base.copy(mode = Mode.LONG, jpegMp = 4.9f, rawActive = false, capturing = true, progress = 0.62f, busyText = "מקליט"),
+    )
+
+    @Test fun panning() = shot(base.copy(mode = Mode.PANNING, jpegMp = 4.9f, rawActive = false, focusPoint = androidx.compose.ui.geometry.Offset(0.45f, 0.62f)))
+
+    @Test fun doubleExposureSecondFrame() {
+        // A stand-in first frame: a dark silhouette against a bright sky.
+        val bmp = android.graphics.Bitmap.createBitmap(120, 160, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        c.drawColor(android.graphics.Color.rgb(225, 228, 232))
+        c.drawCircle(60f, 62f, 26f, android.graphics.Paint().apply { color = android.graphics.Color.rgb(20, 20, 22); isAntiAlias = true })
+        c.drawRect(22f, 92f, 98f, 160f, android.graphics.Paint().apply { color = android.graphics.Color.rgb(20, 20, 22) })
+        shot(base.copy(mode = Mode.DOUBLE, jpegMp = 4.9f, rawActive = false, doubleGhost = bmp.asImageBitmap(), blend = Blend.SCREEN))
+    }
 }

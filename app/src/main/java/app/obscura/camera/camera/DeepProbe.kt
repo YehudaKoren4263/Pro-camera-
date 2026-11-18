@@ -91,7 +91,7 @@ class DeepProbe(private val context: Context) {
             }.getOrDefault(emptyList())))
         }
         root.put("probeErrors", JSONArray(errors))
-        if (errors.isNotEmpty()) rows += "ERRORS" to "${errors.size} sections failed, details in the JSON"
+        if (errors.isNotEmpty()) rows += "ERRORS" to "${errors.size} חלקים נכשלו, הפרטים בקובץ ה-JSON"
         return root to Summary(rows, extensions, vendorRequest)
     }
 
@@ -167,12 +167,12 @@ class DeepProbe(private val context: Context) {
         if (Build.VERSION.SDK_INT >= 30) {
             val h = power.getThermalHeadroom(10)
             o.put("thermalHeadroom10s", if (h.isNaN()) JSONObject.NULL else h.toDouble())
-            if (!h.isNaN()) rows += "THERMAL" to String.format(java.util.Locale.US, "%.2f headroom", h)
+            if (!h.isNaN()) rows += "THERMAL" to String.format(java.util.Locale.US, "מרווח %.2f", h)
         }
         if (Build.VERSION.SDK_INT >= 31) {
             val hint = context.getSystemService(android.os.PerformanceHintManager::class.java)
             o.put("performanceHintRateNs", hint?.preferredUpdateRateNanos ?: JSONObject.NULL)
-            if (hint != null) rows += "ADPF" to "performance hints available"
+            if (hint != null) rows += "ADPF" to "זמין"
         }
 
         // Motion sensors: the gyroscope drives burst alignment.
@@ -200,23 +200,25 @@ class DeepProbe(private val context: Context) {
             val prims = buildMap {
                 put("CLICK", VibrationEffect.Composition.PRIMITIVE_CLICK)
                 put("TICK", VibrationEffect.Composition.PRIMITIVE_TICK)
-                put("THUD", VibrationEffect.Composition.PRIMITIVE_THUD)
-                put("SPIN", VibrationEffect.Composition.PRIMITIVE_SPIN)
                 put("QUICK_RISE", VibrationEffect.Composition.PRIMITIVE_QUICK_RISE)
                 put("SLOW_RISE", VibrationEffect.Composition.PRIMITIVE_SLOW_RISE)
                 put("QUICK_FALL", VibrationEffect.Composition.PRIMITIVE_QUICK_FALL)
-                if (Build.VERSION.SDK_INT >= 31) put("LOW_TICK", VibrationEffect.Composition.PRIMITIVE_LOW_TICK)
+                if (Build.VERSION.SDK_INT >= 31) {
+                    put("THUD", VibrationEffect.Composition.PRIMITIVE_THUD)
+                    put("SPIN", VibrationEffect.Composition.PRIMITIVE_SPIN)
+                    put("LOW_TICK", VibrationEffect.Composition.PRIMITIVE_LOW_TICK)
+                }
             }
             val supported = prims.filter { (_, p) -> runCatching { vib.arePrimitivesSupported(p)[0] }.getOrDefault(false) }.keys
             o.put("haptics", JSONObject().apply {
                 put("amplitudeControl", vib.hasAmplitudeControl())
                 put("primitives", JSONArray(supported.toList()))
-                if (Build.VERSION.SDK_INT >= 31) {
+                if (Build.VERSION.SDK_INT >= 34) {
                     put("resonantFrequencyHz", vib.resonantFrequency.let { if (it.isNaN()) JSONObject.NULL else it.toDouble() })
                     put("qFactor", vib.qFactor.let { if (it.isNaN()) JSONObject.NULL else it.toDouble() })
                 }
             })
-            rows += "HAPTICS" to if (supported.isEmpty()) "basic only" else supported.joinToString(" · ")
+            rows += "HAPTICS" to if (supported.isEmpty()) "בסיסי בלבד" else supported.joinToString(" · ")
         }
 
         // Display: can the viewfinder show HDR and wide colour?
@@ -240,7 +242,7 @@ class DeepProbe(private val context: Context) {
                 }
             })
             rows += "DISPLAY" to buildList {
-                if (d.isWideColorGamut) add("Wide gamut")
+                if (d.isWideColorGamut) add("צבע רחב")
                 if (d.isHdr) add("HDR " + hdrTypes.joinToString("/"))
                 add("${d.supportedModes.maxOf { it.refreshRate }.toInt()} Hz")
             }.joinToString(" · ")

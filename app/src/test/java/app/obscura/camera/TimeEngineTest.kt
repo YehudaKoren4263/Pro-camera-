@@ -169,4 +169,25 @@ class TimeEngineTest {
         for (i in f.y.indices) err += abs((f.y[i].toInt() and 0xFF) - (back.y[i].toInt() and 0xFF))
         assertTrue("mean luma error ${err / f.y.size}", err / f.y.size <= 2)
     }
+
+    @Test fun phoneSizedFramesStayWithinBudget() {
+        // 2560x1920 is the time-mode stream size. A textured frame, shifted per frame.
+        val w = 2560; val h = 1920
+        val base = ByteArray(w * h) { i -> texture((i % w), (i / w)).toByte() }
+        val uv = ByteArray((w / 2) * (h / 2)) { 128.toByte() }
+        fun shifted(dx: Int, dy: Int) = YuvFrame(w, h, ByteArray(w * h) { i ->
+            val x = (i % w + dx).coerceIn(0, w - 1); val y = (i / w + dy).coerceIn(0, h - 1); base[y * w + x]
+        }, uv.copyOf(), uv.copyOf())
+        val frames = (0 until 6).map { shifted(it * 3, -it * 2) }
+        val session = TimeSession(TimeMode.LONG_EXPOSURE, null)
+        session.add(frames[0]) // warm-up + reference
+        val t0 = System.nanoTime()
+        for (f in frames.drop(1)) session.add(f)
+        val perFrameMs = (System.nanoTime() - t0) / 1e6 / (frames.size - 1)
+        val r0 = System.nanoTime(); val out = session.result(); val resultMs = (System.nanoTime() - r0) / 1e6
+        println("perf: %.0f ms per 4.9MP frame (align + accumulate), result %.0f ms, max shift %d, out %dx%d"
+            .format(perFrameMs, resultMs, session.maxShift, out.w, out.h))
+        assertEquals("alignment found the 15 px drift", 15, session.maxShift)
+        assertTrue("per-frame cost $perFrameMs ms", perFrameMs < 600)
+    }
 }

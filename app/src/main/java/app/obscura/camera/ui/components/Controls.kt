@@ -20,6 +20,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -47,25 +49,38 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.obscura.camera.camera.ExposureMath
 import app.obscura.camera.camera.Lens
 import app.obscura.camera.camera.Look
 import app.obscura.camera.camera.Looks
+import app.obscura.camera.camera.OutputFormat
+import app.obscura.camera.time.Blend
 import app.obscura.camera.ui.CameraActions
 import app.obscura.camera.ui.CameraUiState
 import app.obscura.camera.ui.Control
 import app.obscura.camera.ui.Dials
+import app.obscura.camera.ui.Mode
 import app.obscura.camera.ui.Ob
 import app.obscura.camera.ui.Txt
+import app.obscura.camera.ui.labelStyleFor
+import app.obscura.camera.ui.ltr
 
 /** Plain press target with no ripple: the motion comes from our own animations. */
 fun Modifier.press(onClick: () -> Unit): Modifier = this.clickable(
     interactionSource = MutableInteractionSource(), indication = null, onClick = onClick,
 )
+
+/** Runs [content] left to right: instruments (dials, graphs, the image) do not mirror. */
+@Composable
+fun Ltr(content: @Composable () -> Unit) =
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, content = content)
 
 // ---- Top bar ---------------------------------------------------------------------------------
 
@@ -73,45 +88,39 @@ fun Modifier.press(onClick: () -> Unit): Modifier = this.clickable(
 fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = Ob.gutter)) {
         Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
-            Txt("OBSCURA", Ob.Wordmark)
+            Ltr { Txt("OBSCURA", Ob.Wordmark) }
             Spacer(Modifier.weight(1f))
             AccessBadge(s, Modifier.press(a::toggleSensor))
         }
-        Row(Modifier.fillMaxWidth().height(28.dp), verticalAlignment = Alignment.CenterVertically) {
-            val rawText = when {
-                s.format.name == "JPEG" -> "JPEG"
+        Row(Modifier.fillMaxWidth().height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+            val format = when {
+                s.mode.time -> "JPEG"
+                s.format == OutputFormat.JPEG -> "JPEG"
                 s.rawActive -> "RAW + JPEG"
-                s.rawRefused -> "RAW refused"
-                else -> "JPEG · no RAW"
+                s.rawRefused -> "RAW נדחה"
+                else -> "JPEG · בלי RAW"
             }
-            Toggle(rawText, s.rawActive, onClick = a::toggleFormat)
-            Dot()
-            Txt(
-                buildString {
-                    append(String.format(java.util.Locale.US, "%.1f MP", if (s.rawActive) s.rawMp else s.jpegMp))
-                },
-                Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)),
-            )
+            Toggle(format, s.rawActive && !s.mode.time, onClick = a::toggleFormat)
+            Txt("  ·  ", Ob.Mono.copy(color = Ob.Smoke))
+            Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", if (s.rawActive && !s.mode.time) s.rawMp else s.jpegMp)),
+                Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
             Spacer(Modifier.weight(1f))
-            Toggle("NATURAL", s.natural, onClick = a::toggleNatural)
-            Spacer(Modifier.width(12.dp))
-            Toggle("GRID", s.grid, onClick = a::toggleGrid)
-            Spacer(Modifier.width(12.dp))
-            Toggle("LEVEL", s.level, onClick = a::toggleLevel)
-            Spacer(Modifier.width(12.dp))
-            Toggle("HIST", s.histogramOn, onClick = a::toggleHistogram)
+            Toggle("טבעי", s.natural, onClick = a::toggleNatural)
+            Spacer(Modifier.width(14.dp))
+            Toggle("רשת", s.grid, onClick = a::toggleGrid)
+            Spacer(Modifier.width(14.dp))
+            Toggle("פלס", s.level, onClick = a::toggleLevel)
+            Spacer(Modifier.width(14.dp))
+            Toggle("היסטוגרמה", s.histogramOn, onClick = a::toggleHistogram)
         }
     }
 }
 
 @Composable
-private fun Dot() = Txt("  ·  ", Ob.Mono.copy(color = Ob.Smoke))
-
-@Composable
 fun Toggle(label: String, on: Boolean, onClick: () -> Unit) {
     val color by animateColorAsState(if (on) Ob.Ivory else Ob.Smoke, tween(180), label = "toggle")
     Column(Modifier.press(onClick).padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Txt(label, Ob.Label.copy(color = color))
+        Txt(label, labelStyleFor(label).copy(color = color))
         Spacer(Modifier.height(3.dp))
         Box(Modifier.width(10.dp).height(1.dp).background(if (on) Ob.Brass else Color.Transparent))
     }
@@ -130,10 +139,10 @@ private fun AccessBadge(s: CameraUiState, modifier: Modifier) {
     ) {
         Box(Modifier.size(5.dp).background(if (unlocked) Ob.Brass else Ob.Smoke, CircleShape))
         Spacer(Modifier.width(7.dp))
-        Txt("SENSOR $level", Ob.Label.copy(color = if (unlocked) Ob.Brass else Ob.Ash))
+        Txt("חיישן ${ltr(level)}", Ob.LabelHe.copy(color = if (unlocked) Ob.Brass else Ob.Ash))
         if (r != null) {
-            Txt("  ·  ${r.cameras.size} CAM", Ob.Label.copy(color = Ob.Ash))
-            if (r.hiddenCount > 0) Txt("  ·  ${r.hiddenCount} HIDDEN", Ob.Label.copy(color = Ob.Brass))
+            Txt("  ·  ${r.cameras.size} מצלמות", Ob.LabelHe.copy(color = Ob.Ash))
+            if (r.hiddenCount > 0) Txt("  ·  ${r.hiddenCount} נסתרות", Ob.LabelHe.copy(color = Ob.Brass))
         }
     }
 }
@@ -160,31 +169,32 @@ private fun ReadoutCell(c: Control, s: CameraUiState, a: CameraActions, modifier
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Txt(c.label, Ob.Label.copy(color = if (active) Ob.Ivory else Ob.Ash))
+            Txt(c.label, labelStyleFor(c.label).copy(color = if (active) Ob.Ivory else Ob.Ash))
             Spacer(Modifier.width(3.dp))
             Txt(if (r.auto) "A" else "M", Ob.Label.copy(fontSize = 8.sp, color = if (r.auto) Ob.Smoke else Ob.Brass))
         }
         Spacer(Modifier.height(4.dp))
-        Txt(r.value, Ob.Value.copy(color = valueColor, textAlign = TextAlign.Center))
+        Txt(ltr(r.value), Ob.Value.copy(color = valueColor, textAlign = TextAlign.Center))
         Spacer(Modifier.height(6.dp))
         Box(Modifier.width(22.dp * underline).height(1.dp).background(Ob.Brass))
     }
 }
 
-// ---- Context area: dial, looks, or the information line --------------------------------------
+// ---- Context area: dial, looks, time mode, or the information line ---------------------------
 
 @Composable
 fun DialPanel(c: Control, s: CameraUiState, a: CameraActions) {
     val m = Dials.model(c, s)
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalAlignment = Alignment.CenterVertically) {
-            Txt(c.label, Ob.Label.copy(color = Ob.Ivory))
+            Txt(c.label, labelStyleFor(c.label).copy(color = Ob.Ivory))
             Spacer(Modifier.width(10.dp))
-            Txt(m.note ?: m.options.getOrElse(m.selected) { "" }, Ob.Mono.copy(color = if (m.note != null) Ob.Ash else Ob.Brass))
+            Txt(m.note ?: ltr(m.options.getOrElse(m.selected) { "" }), (if (m.note != null) Ob.LabelHe else Ob.Mono).copy(color = if (m.note != null) Ob.Ash else Ob.Brass))
             Spacer(Modifier.weight(1f))
-            Txt("RESET", Ob.Label.copy(color = Ob.Ash), Modifier.press { a.resetControl(c) }.padding(6.dp))
+            Txt("איפוס", Ob.LabelHe, Modifier.press { a.resetControl(c) }.padding(6.dp))
         }
-        RulerDial(m.options, m.selected, m.enabled, onSelect = { a.dial(c, it) })
+        // A lens ring does not mirror: values grow to the right in every language.
+        Ltr { RulerDial(m.options, m.selected, m.enabled, onSelect = { a.dial(c, it) }) }
     }
 }
 
@@ -193,20 +203,21 @@ fun InfoLine(s: CameraUiState, modifier: Modifier = Modifier) {
     val lens = s.activeLens
     val live = s.live
     val parts = buildList {
-        lens?.let { add("${it.equivMm}mm eq.") }
+        lens?.let { add("${it.equivMm}mm") }
         live.aperture?.let { add("ƒ" + String.format(java.util.Locale.US, "%.1f", it)) }
-        live.focalMm?.let { add(String.format(java.util.Locale.US, "%.2fmm", it)) }
         val ap = live.aperture; val sh = live.shutterNs; val iso = live.iso
         if (ap != null && sh != null && iso != null && sh > 0) {
             add("EV₁₀₀ " + String.format(java.util.Locale.US, "%.1f", ExposureMath.ev100(ap, sh, iso)))
         }
         s.activeInfo?.let { add(it.hardwareLevel) }
-        if (s.look != Looks.NEUTRAL) add(s.look.name.uppercase())
+        if (s.look != Looks.NEUTRAL) add(s.look.name)
     }
-    Txt(
-        parts.joinToString("   "), Ob.Mono.copy(color = Ob.Ash, textAlign = TextAlign.Center),
-        modifier.fillMaxWidth().padding(horizontal = Ob.gutter),
-    )
+    Ltr {
+        Txt(
+            parts.joinToString("   "), Ob.Mono.copy(color = Ob.Ash, textAlign = TextAlign.Center),
+            modifier.fillMaxWidth().padding(horizontal = Ob.gutter),
+        )
+    }
 }
 
 @Composable
@@ -214,7 +225,7 @@ fun LookStrip(s: CameraUiState, a: CameraActions) {
     LazyRow(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Ob.gutter),
+        contentPadding = PaddingValues(horizontal = Ob.gutter),
     ) {
         items(Looks.ALL, key = { it.id }) { look -> LookCard(look, look == s.look) { a.selectLook(look) } }
     }
@@ -224,7 +235,7 @@ fun LookStrip(s: CameraUiState, a: CameraActions) {
 private fun LookCard(look: Look, selected: Boolean, onClick: () -> Unit) {
     val border by animateColorAsState(if (selected) Ob.Brass else Ob.Hairline, tween(200), label = "lb")
     Column(
-        Modifier.width(104.dp).border(0.8.dp, border, RoundedCornerShape(8.dp)).press(onClick).padding(8.dp),
+        Modifier.width(110.dp).border(0.8.dp, border, RoundedCornerShape(8.dp)).press(onClick).padding(8.dp),
     ) {
         Row(Modifier.fillMaxWidth().height(18.dp).clip(RoundedCornerShape(3.dp))) {
             look.swatch.forEach { Box(Modifier.weight(1f).height(18.dp).background(Color(it))) }
@@ -232,7 +243,81 @@ private fun LookCard(look: Look, selected: Boolean, onClick: () -> Unit) {
         Spacer(Modifier.height(7.dp))
         Txt(look.name, Ob.Body.copy(fontSize = 12.sp, color = if (selected) Ob.Ivory else Ob.Ivory.copy(alpha = 0.8f)))
         Spacer(Modifier.height(2.dp))
-        Txt(look.note, Ob.Mono.copy(fontSize = 8.5.sp, color = Ob.Smoke), maxLines = 2)
+        Txt(look.note, Ob.LabelHe.copy(fontSize = 9.5.sp, color = Ob.Smoke, fontWeight = FontWeight.Normal), maxLines = 2)
+    }
+}
+
+/** Settings for the active time mode: duration, or blend for double exposure. */
+@Composable
+fun TimePanel(s: CameraUiState, a: CameraActions) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        when (s.mode) {
+            Mode.DOUBLE -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Txt(if (s.doubleGhost == null) "פריים ראשון" else "פריים שני", Ob.LabelHe.copy(color = Ob.Ivory))
+                    Spacer(Modifier.width(8.dp))
+                    Txt(ltr(if (s.doubleGhost == null) "1/2" else "2/2"), Ob.Mono.copy(color = Ob.Brass))
+                    Spacer(Modifier.weight(1f))
+                    if (s.doubleGhost != null) Txt("התחל מחדש", Ob.LabelHe, Modifier.press(a::resetDouble).padding(6.dp))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(Blend.SCREEN to "מסך", Blend.LIGHTEN to "הבהרה", Blend.DARKEN to "הכהיה", Blend.AVERAGE to "ממוצע").forEach { (b, label) ->
+                        Chip(label, s.blend == b) { a.selectBlend(b) }
+                    }
+                }
+            }
+            else -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Txt(
+                        when (s.mode) {
+                            Mode.PANNING -> "הקש על הנושא. הוא יישאר חד, הרקע יימרח."
+                            Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
+                            else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד."
+                        },
+                        Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    s.mode.durations.forEach { ms -> Chip(ltr(formatDuration(ms)), s.duration == ms) { a.selectDuration(ms) } }
+                }
+            }
+        }
+    }
+}
+
+fun formatDuration(ms: Long): String = when {
+    ms < 1000 -> "${ms}ms".let { if (ms == 500L) "½s" else if (ms == 250L) "¼s" else it }
+    else -> "${ms / 1000}s"
+}
+
+@Composable
+private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val border by animateColorAsState(if (selected) Ob.Brass else Ob.Hairline, tween(180), label = "chip")
+    Txt(
+        label, labelStyleFor(label).copy(color = if (selected) Ob.Ivory else Ob.Ash, fontSize = 12.sp),
+        Modifier.border(0.8.dp, border, RoundedCornerShape(50)).press(onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+    )
+}
+
+// ---- Mode strip ------------------------------------------------------------------------------
+
+@Composable
+fun ModeStrip(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
+    val haptic = LocalHapticFeedback.current
+    LazyRow(
+        modifier.fillMaxWidth().height(34.dp),
+        horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+        contentPadding = PaddingValues(horizontal = Ob.gutter),
+    ) {
+        items(Mode.entries) { m ->
+            val active = m == s.mode
+            val color by animateColorAsState(if (active) Ob.Brass else Ob.Ash, tween(180), label = "mode")
+            Txt(
+                m.title, Ob.LabelHe.copy(fontSize = 12.5.sp, color = color, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium),
+                Modifier.press { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); a.selectMode(m) }.padding(vertical = 6.dp),
+            )
+        }
     }
 }
 
@@ -255,7 +340,7 @@ fun LensSelector(lenses: List<Lens>, activeKey: String?, onSelect: (String) -> U
                 },
                 contentAlignment = Alignment.Center,
             ) {
-                Txt(lens.label, Ob.Value.copy(fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Normal,
+                Txt(lens.label, Ob.Value.copy(fontSize = 12.sp, fontWeight = FontWeight.Normal,
                     color = if (active) Ob.Brass else Ob.Ivory.copy(alpha = 0.8f)))
                 if (lens.hidden || lens.physicalId != null) {
                     // Brass mark: a lens the stock camera list does not give third-party apps.
@@ -276,7 +361,7 @@ fun BottomBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier)
     ) {
         Thumb(s, a)
         Spacer(Modifier.weight(1f))
-        ShutterButton(s.capturing, onShutter = a::shutter)
+        ShutterButton(s.capturing, s.progress, s.mode.time, onShutter = a::shutter)
         Spacer(Modifier.weight(1f))
         LookButton(s, a)
     }
@@ -290,7 +375,7 @@ private fun Thumb(s: CameraUiState, a: CameraActions) {
         contentAlignment = Alignment.Center,
     ) {
         val bmp = s.lastShot
-        if (bmp != null) Image(bmp, contentDescription = "Last photo", contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp))
+        if (bmp != null) Image(bmp, contentDescription = "התמונה האחרונה", contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp))
         if (s.lastShotHasRaw) {
             Txt("RAW", Ob.Label.copy(fontSize = 7.sp, color = Ob.Ink, letterSpacing = 0.8.sp),
                 Modifier.align(Alignment.BottomStart).padding(3.dp).background(Ob.Brass, RoundedCornerShape(2.dp)).padding(horizontal = 3.dp, vertical = 1.dp))
@@ -298,12 +383,16 @@ private fun Thumb(s: CameraUiState, a: CameraActions) {
     }
 }
 
+/**
+ * The shutter. Photo mode: an ivory disc. Time modes: a brass ring inside the disc, and while
+ * recording a brass arc that fills with elapsed time.
+ */
 @Composable
-fun ShutterButton(capturing: Boolean, onShutter: () -> Unit, size: Dp = 78.dp) {
+fun ShutterButton(capturing: Boolean, progress: Float?, timeMode: Boolean, onShutter: () -> Unit, size: Dp = 78.dp) {
     val haptic = LocalHapticFeedback.current
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.9f else 1f, tween(110), label = "press")
+    val scale by animateFloatAsState(if (pressed) 0.9f else if (progress != null) 0.82f else 1f, tween(140), label = "press")
     val spin = rememberInfiniteTransition(label = "spin")
     val angle by spin.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart), label = "a")
     Box(
@@ -313,25 +402,30 @@ fun ShutterButton(capturing: Boolean, onShutter: () -> Unit, size: Dp = 78.dp) {
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(size)) {
-            drawCircle(Ob.Ivory.copy(alpha = 0.9f), radius = this.size.minDimension / 2f - 1.dp.toPx(), style = Stroke(1.4.dp.toPx()))
-            if (capturing) {
-                drawArc(Ob.Brass, startAngle = angle, sweepAngle = 70f, useCenter = false,
-                    topLeft = Offset(1.dp.toPx(), 1.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(this.size.width - 2.dp.toPx(), this.size.height - 2.dp.toPx()),
+            val inset = 1.dp.toPx()
+            val arcSize = androidx.compose.ui.geometry.Size(this.size.width - 2 * inset, this.size.height - 2 * inset)
+            drawCircle(Ob.Ivory.copy(alpha = 0.9f), radius = this.size.minDimension / 2f - inset, style = Stroke(1.4.dp.toPx()))
+            when {
+                progress != null -> drawArc(Ob.Brass, -90f, 360f * progress, false, Offset(inset, inset), arcSize,
+                    style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round))
+                capturing -> drawArc(Ob.Brass, angle, 70f, false, Offset(inset, inset), arcSize,
                     style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
             }
         }
         Box(
             Modifier.size(size - 14.dp).scale(scale)
                 .background(Brush.radialGradient(listOf(Color(0xFFF6F2EA), Ob.Ivory, Color(0xFFD9D3C8))), CircleShape),
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            if (timeMode) Box(Modifier.size(22.dp).border(1.6.dp, Ob.Brass, CircleShape))
+        }
     }
 }
 
 @Composable
 private fun LookButton(s: CameraUiState, a: CameraActions) {
     val active = s.looksOpen || s.look != Looks.NEUTRAL
-    Column(Modifier.width(48.dp).press(a::toggleLooks), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.width(52.dp).press(a::toggleLooks), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier.size(34.dp).border(0.8.dp, if (active) Ob.Brass else Ob.HairlineStrong, CircleShape).padding(5.dp)
                 .clip(CircleShape),
@@ -339,7 +433,8 @@ private fun LookButton(s: CameraUiState, a: CameraActions) {
             Row(Modifier.size(24.dp)) { s.look.swatch.forEach { Box(Modifier.weight(1f).height(24.dp).background(Color(it))) } }
         }
         Spacer(Modifier.height(5.dp))
-        Txt(if (s.look.isNeutral) "LOOK" else s.look.name.substringBefore(' ').uppercase(), Ob.Label.copy(fontSize = 8.sp, color = if (active) Ob.Brass else Ob.Ash))
+        Txt(if (s.look.isNeutral) "מראה" else s.look.name.substringBefore(' '),
+            labelStyleFor(if (s.look.isNeutral) "מראה" else "x").copy(fontSize = 9.5.sp, color = if (active) Ob.Brass else Ob.Ash))
     }
 }
 
@@ -352,7 +447,20 @@ fun MessageBar(text: String, onDismiss: () -> Unit, modifier: Modifier = Modifie
     ) {
         Box(Modifier.size(5.dp).background(Ob.Brass, CircleShape))
         Spacer(Modifier.width(10.dp))
-        Txt(text, Ob.Body.copy(fontSize = 12.sp), maxLines = 2)
+        Txt(text, Ob.Body.copy(fontSize = 12.5.sp), maxLines = 2)
     }
 }
 
+/** Status chip over the viewfinder while the engine records or merges. */
+@Composable
+fun BusyChip(text: String, progress: Float?, durationMs: Long, modifier: Modifier = Modifier) {
+    Row(
+        modifier.background(Ob.Scrim, RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(6.dp).background(if (progress != null) Ob.Signal else Ob.Brass, CircleShape))
+        Spacer(Modifier.width(8.dp))
+        val extra = progress?.let { "  " + ltr(String.format(java.util.Locale.US, "%.1fs", it * durationMs / 1000f)) } ?: ""
+        Txt(text + extra, Ob.LabelHe.copy(color = Ob.Ivory))
+    }
+}

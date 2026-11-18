@@ -31,6 +31,9 @@ import android.util.Size
 import android.view.Surface
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import app.obscura.camera.time.YuvFrame
+import app.obscura.camera.time.YuvImages
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -48,7 +51,14 @@ class CameraController(private val context: Context, private val listener: Liste
         fun onError(message: String)
     }
 
-    data class SessionInfo(val lens: Lens, val rawActive: Boolean, val jpeg: Size, val raw: Size?, val preview: Size, val rawRefused: Boolean)
+    data class SessionInfo(
+        val lens: Lens, val rawActive: Boolean, val jpeg: Size, val raw: Size?, val preview: Size, val rawRefused: Boolean,
+        /** Set when the session streams YUV for the time modes instead of JPEG/RAW stills. */
+        val yuv: Size? = null,
+    )
+
+    /** What a recording delivered. [orientation] is the rotation that makes frames upright. */
+    data class BurstStats(val received: Int, val dropped: Int, val orientation: Int)
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val thread = HandlerThread("obscura-camera").apply { start() }
@@ -61,6 +71,11 @@ class CameraController(private val context: Context, private val listener: Liste
     private var previewSurface: Surface? = null
     private var jpegReader: ImageReader? = null
     private var rawReader: ImageReader? = null
+    private var yuvReader: ImageReader? = null
+    private var timeSession = false
+    private var recording: Recording? = null
+    /** Frames are processed in order on one thread; a recording's onDone runs after its last frame. */
+    private val processor = Executors.newSingleThreadExecutor()
     private var characteristics: CameraCharacteristics? = null
     private var lens: Lens? = null
 
@@ -77,13 +92,14 @@ class CameraController(private val context: Context, private val listener: Liste
 
     // ---- Lifecycle -------------------------------------------------------------------------
 
-    fun open(lens: Lens, texture: SurfaceTexture, wantRaw: Boolean) = handler.post {
+    fun open(lens: Lens, texture: SurfaceTexture, wantRaw: Boolean, time: Boolean = false) = handler.post {
         closeInternal()
         this.lens = lens
+        timeSession = time
         try {
-            openInternal(lens, texture, wantRaw && lens.raw && lens.physicalId == null, rawRefused = false)
+            openInternal(lens, texture, !time && wantRaw && lens.raw && lens.physicalId == null, rawRefused = false)
         } catch (e: Exception) {
-            listener.onError("Camera ${lens.cameraId}: ${e.message}")
+            listener.onError("מצלמה ${lens.cameraId}: ${e.message}")
         }
     }
 
@@ -92,6 +108,7 @@ class CameraController(private val context: Context, private val listener: Liste
     fun release() {
         handler.post { closeInternal(); thread.quitSafely() }
         io.shutdown()
+        processor.shutdown()
     }
 
     @SuppressLint("MissingPermission")
@@ -105,6 +122,11 @@ class CameraController(private val context: Context, private val listener: Liste
         val jpegSize = map.getOutputSizes(ImageFormat.JPEG).filter { isFourThree(it) }.maxByOrNull { it.area }
             ?: map.getOutputSizes(ImageFormat.JPEG).maxBy { it.area }
         val rawSize = if (raw) map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.area } else null
+        // Time modes stream YUV: about 5 MP keeps alignment and stacking near real time.
+        val yuvSize = if (timeSession) {
+            val all = map.getOutputSizes(ImageFormat.YUV_420_888).filter { it.width <= 2560 && it.height <= 1920 }
+            all.filter { isFourThree(it) }.maxByOrNull { it.area } ?: all.maxByOrNull { it.area }
+        } else null
         val preview = map.getOutputSizes(SurfaceTexture::class.java)
             .filter { isFourThree(it) && it.width <= 1920 && it.height <= 1440 }
             .maxByOrNull { it.area } ?: Size(1440, 1080)
@@ -114,7 +136,8 @@ class CameraController(private val context: Context, private val listener: Liste
         manager.openCamera(lens.cameraId, executor, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 device = camera
-                createSession(camera, lens, jpegSize, rawSize, preview, texture, rawRefused)
+                if (yuvSize != null) createTimeSession(camera, lens, yuvSize, preview)
+                else createSession(camera, lens, jpegSize, rawSize, preview, texture, rawRefused)
             }
             override fun onDisconnected(camera: CameraDevice) { camera.close(); device = null }
             override fun onError(camera: CameraDevice, error: Int) {
@@ -151,13 +174,39 @@ class CameraController(private val context: Context, private val listener: Liste
                         Log.w(TAG, "session with RAW refused, retrying without")
                         closeInternal()
                         openInternal(lens, texture, raw = false, rawRefused = true)
-                    } else listener.onError("This lens refused the capture session")
+                    } else listener.onError("העדשה סירבה לפתוח את הצילום")
                 }
             })
         camera.createCaptureSession(config)
     }
 
+    private fun createTimeSession(camera: CameraDevice, lens: Lens, yuv: Size, preview: Size) {
+        val yr = ImageReader.newInstance(yuv.width, yuv.height, ImageFormat.YUV_420_888, 4)
+        yuvReader = yr
+        yr.setOnImageAvailableListener({ r -> onYuv(r) }, handler)
+        val outputs = listOfNotNull(previewSurface, yr.surface).map { s ->
+            OutputConfiguration(s).also { oc -> lens.physicalId?.let { oc.setPhysicalCameraId(it) } }
+        }
+        camera.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, executor,
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) {
+                    session = s
+                    startRepeating()
+                    listener.onOpened(SessionInfo(lens, false, yuv, null, preview, false, yuv = yuv))
+                }
+                override fun onConfigureFailed(s: CameraCaptureSession) = listener.onError("העדשה סירבה לזרם של מצבי הזמן")
+            }))
+    }
+
     private fun closeInternal() {
+        recording?.let { rec ->
+            // Interrupted (app paused, lens switched): still report, so the UI never hangs.
+            rec.stopped = true
+            val stats = BurstStats(rec.received, rec.dropped, jpegOrientation())
+            processor.execute { rec.onDone(stats) }
+        }
+        recording = null
+        runCatching { yuvReader?.close() }; yuvReader = null
         runCatching { session?.close() }; session = null
         runCatching { device?.close() }; device = null
         runCatching { jpegReader?.close() }; jpegReader = null
@@ -218,7 +267,14 @@ class CameraController(private val context: Context, private val listener: Liste
         runCatching {
             val b = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { b.addTarget(it) }
+            val rec = recording
+            if (rec != null && !rec.single) yuvReader?.let { b.addTarget(it.surface) }
             apply(b)
+            if (rec != null) {
+                // One exposure and one colour balance for the whole stack.
+                b.set(CaptureRequest.CONTROL_AE_LOCK, true)
+                b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+            }
             s.setRepeatingRequest(b.build(), readoutCallback, handler)
         }.onFailure { Log.w(TAG, "repeating failed", it) }
     }
@@ -295,6 +351,76 @@ class CameraController(private val context: Context, private val listener: Liste
         }
     }
 
+    // ---- Time modes: recording into the engine ----------------------------------------------
+
+    private class Recording(val sink: (YuvFrame) -> Unit, val single: Boolean, val onDone: (BurstStats) -> Unit) {
+        var received = 0
+        var dropped = 0
+        val inFlight = AtomicInteger(0)
+        @Volatile var stopped = false
+    }
+
+    /**
+     * Streams YUV frames into [sink] for [durationMs]. Frames arriving while two are still being
+     * processed are dropped and counted, so memory stays flat however slow the device is.
+     */
+    fun record(durationMs: Long, sink: (YuvFrame) -> Unit, onDone: (BurstStats) -> Unit) = handler.post {
+        if (!timeSession || session == null || yuvReader == null || recording != null) {
+            listener.onError("המצלמה עוד לא מוכנה למצב הזה"); return@post
+        }
+        val rec = Recording(sink, single = false, onDone = onDone)
+        recording = rec
+        startRepeating()
+        handler.postDelayed({ finish(rec) }, durationMs)
+    }
+
+    /** Captures exactly one YUV frame (double exposure). */
+    fun grab(sink: (YuvFrame) -> Unit, onDone: (BurstStats) -> Unit) = handler.post {
+        val s = session; val dev = device; val yr = yuvReader
+        if (!timeSession || s == null || dev == null || yr == null || recording != null) {
+            listener.onError("המצלמה עוד לא מוכנה למצב הזה"); return@post
+        }
+        val rec = Recording(sink, single = true, onDone = onDone)
+        recording = rec
+        runCatching {
+            val b = dev.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            previewSurface?.let { b.addTarget(it) }
+            b.addTarget(yr.surface)
+            apply(b)
+            s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureStarted(session: CameraCaptureSession, request: CaptureRequest, timestamp: Long, frameNumber: Long) = listener.onShutter()
+                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
+                    recording = null; listener.onError("הצילום נכשל (קוד ${failure.reason})")
+                }
+            }, handler)
+        }.onFailure { recording = null; listener.onError("הצילום נכשל: ${it.message}") }
+    }
+
+    private fun onYuv(r: ImageReader) {
+        val img = r.acquireNextImage() ?: return
+        val rec = recording
+        if (rec == null || rec.stopped) { img.close(); return }
+        if (rec.inFlight.get() >= 2) { rec.dropped++; img.close(); return }
+        val frame = try { YuvImages.copy(img) } catch (e: Exception) { Log.w(TAG, "yuv copy", e); null } finally { img.close() }
+        if (frame == null) { rec.dropped++; return }
+        rec.received++
+        rec.inFlight.incrementAndGet()
+        processor.execute {
+            try { if (!rec.stopped || rec.single) rec.sink(frame) } catch (e: Throwable) { Log.e(TAG, "time sink", e) }
+            finally { rec.inFlight.decrementAndGet() }
+        }
+        if (rec.single) finish(rec)
+    }
+
+    private fun finish(rec: Recording) {
+        if (recording !== rec) return
+        recording = null
+        startRepeating()
+        val stats = BurstStats(rec.received, rec.dropped, jpegOrientation())
+        // Queued behind every frame already handed to the processor.
+        processor.execute { rec.onDone(stats) }
+    }
+
     // ---- Capture ---------------------------------------------------------------------------
 
     private class PendingShot(val rawExpected: Boolean, val orientation: Int, val look: Look) {
@@ -329,10 +455,10 @@ class CameraController(private val context: Context, private val listener: Liste
                 }
                 override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
                     shot.raw?.close(); pending = null
-                    listener.onError("Capture failed (reason ${failure.reason})")
+                    listener.onError("הצילום נכשל (קוד ${failure.reason})")
                 }
             }, handler)
-        }.onFailure { pending = null; listener.onError("Capture failed: ${it.message}") }
+        }.onFailure { pending = null; listener.onError("הצילום נכשל: ${it.message}") }
     }
 
     private fun onJpeg(r: ImageReader) {
@@ -388,12 +514,12 @@ class CameraController(private val context: Context, private val listener: Liste
     private val Size.area get() = width.toLong() * height
 
     private fun cameraErrorText(code: Int) = when (code) {
-        CameraDevice.StateCallback.ERROR_CAMERA_IN_USE -> "Camera is in use by another app"
-        CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE -> "Too many cameras open"
-        CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> "Camera disabled by policy"
-        CameraDevice.StateCallback.ERROR_CAMERA_DEVICE -> "Camera device error"
-        CameraDevice.StateCallback.ERROR_CAMERA_SERVICE -> "Camera service error"
-        else -> "Camera error $code"
+        CameraDevice.StateCallback.ERROR_CAMERA_IN_USE -> "המצלמה בשימוש באפליקציה אחרת"
+        CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE -> "יותר מדי מצלמות פתוחות"
+        CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> "המצלמה חסומה במדיניות המכשיר"
+        CameraDevice.StateCallback.ERROR_CAMERA_DEVICE -> "שגיאה בחומרת המצלמה"
+        CameraDevice.StateCallback.ERROR_CAMERA_SERVICE -> "שגיאה בשירות המצלמה"
+        else -> "שגיאת מצלמה $code"
     }
 
     companion object { private const val TAG = "Obscura" }

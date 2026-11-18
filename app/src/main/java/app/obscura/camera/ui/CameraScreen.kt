@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -24,10 +25,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import app.obscura.camera.ui.components.BottomBar
+import app.obscura.camera.ui.components.BusyChip
+import app.obscura.camera.ui.components.Ltr
+import app.obscura.camera.ui.components.ModeStrip
+import app.obscura.camera.ui.components.TimePanel
 import app.obscura.camera.ui.components.DialPanel
 import app.obscura.camera.ui.components.FocusReticle
 import app.obscura.camera.ui.components.GridOverlay
@@ -52,6 +59,7 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
                 Viewfinder(s, a, preview, Modifier.weight(1f, fill = false).aspectRatio(3f / 4f, matchHeightConstraintsFirst = true))
                 ContextPanel(s, a)
             }
+            ModeStrip(s, a)
             ReadoutStrip(s, a)
             BottomBar(s, a, Modifier.navigationBarsPadding())
         }
@@ -75,10 +83,17 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
     }
 }
 
+/** The image and its instruments. Always left to right: a photograph does not mirror. */
 @Composable
-private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable (Modifier) -> Unit, modifier: Modifier) {
+private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable (Modifier) -> Unit, modifier: Modifier) = Ltr {
     Box(modifier.clip(RoundedCornerShape(3.dp)).background(Ob.Graphite)) {
         preview(Modifier.fillMaxSize())
+
+        // Double exposure: the first frame floats over the live image while the second is framed.
+        s.doubleGhost?.let { ghost ->
+            Image(ghost, contentDescription = "הפריים הראשון", contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().alpha(0.45f))
+        }
 
         Box(
             Modifier.fillMaxSize().pointerInput(Unit) {
@@ -90,28 +105,30 @@ private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable 
         )
         if (s.grid) GridOverlay()
         if (s.level) LevelOverlay(s.rollDegrees)
-        s.focusPoint?.let { FocusReticle(it, s.live.afLocked, it) }
+        s.focusPoint?.let { FocusReticle(it, s.live.afLocked || s.mode == Mode.PANNING, it) }
 
         if (s.histogramOn) {
             HistogramPlate(s.histogram, Modifier.align(Alignment.TopEnd).padding(10.dp))
         }
         ModeTag(s, Modifier.align(Alignment.TopStart).padding(10.dp))
+        s.busyText?.let { BusyChip(it, s.progress, s.duration, Modifier.align(Alignment.TopCenter).padding(top = 58.dp)) }
 
         LensSelector(s.lenses, s.activeLensKey, a::selectLens, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp))
         ShutterFlash(s.shutterTick)
     }
 }
 
-/** Under the viewfinder: the active dial, the look strip, or the quiet information line. */
+/** Under the viewfinder: the active dial, the look strip, the time-mode settings, or the information line. */
 @Composable
 private fun ContextPanel(s: CameraUiState, a: CameraActions) {
     val kind = when {
         s.activeControl != null -> "dial"
         s.looksOpen -> "looks"
+        s.mode.time -> "time"
         else -> "info"
     }
     AnimatedContent(
-        targetState = kind to s.activeControl,
+        targetState = Triple(kind, s.activeControl, s.mode),
         transitionSpec = {
             (fadeIn(tween(200)) + slideInVertically(tween(260)) { it / 4 }) togetherWith
                 (fadeOut(tween(140)) + slideOutVertically(tween(200)) { it / 4 })
@@ -119,11 +136,12 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
         modifier = Modifier.fillMaxWidth().height(104.dp),
         contentAlignment = Alignment.Center,
         label = "panel",
-    ) { (k, control) ->
+    ) { (k, control, _) ->
         Box(Modifier.fillMaxWidth().height(104.dp).padding(top = 10.dp), contentAlignment = Alignment.Center) {
             when (k) {
                 "dial" -> DialPanel(control!!, s, a)
                 "looks" -> LookStrip(s, a)
+                "time" -> TimePanel(s, a)
                 else -> InfoLine(s)
             }
         }

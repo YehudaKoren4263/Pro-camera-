@@ -26,6 +26,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -80,20 +83,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         is UiEvent.ShareJson -> runCatching {
                             startActivity(Intent.createChooser(
                                 Intent(Intent.ACTION_SEND).setType("application/json").putExtra(Intent.EXTRA_STREAM, e.uri)
-                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share sensor report"))
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "שיתוף דוח החיישן"))
                         }
                     }
                 }
             }
-            if (!state.hasPermission) {
-                PermissionScreen { permission.launch(Manifest.permission.CAMERA) }
-            } else {
-                CameraScreen(state, vm) { m ->
-                    CameraPreview(
-                        look = state.look, histogramOn = state.histogramOn,
-                        onTexture = vm::onTextureAvailable, onTextureGone = vm::onTextureDestroyed,
-                        onHistogram = vm::onHistogram, modifier = m,
-                    )
+            // Hebrew interface: the whole app is right to left. Instruments opt back into LTR.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                if (!state.hasPermission) {
+                    PermissionScreen { permission.launch(Manifest.permission.CAMERA) }
+                } else {
+                    CameraScreen(state, vm) { m ->
+                        CameraPreview(
+                            look = state.look, histogramOn = state.histogramOn,
+                            onTexture = vm::onTextureAvailable, onTextureGone = vm::onTextureDestroyed,
+                            onHistogram = vm::onHistogram, modifier = m,
+                        )
+                    }
                 }
             }
         }
@@ -129,10 +135,10 @@ private fun PermissionScreen(onGrant: () -> Unit) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Txt("OBSCURA", Ob.Wordmark)
             Spacer(Modifier.height(18.dp))
-            Txt("A camera needs light, and permission.", Ob.Body.copy(color = Ob.Ash))
+            Txt("מצלמה צריכה אור, והרשאה.", Ob.Body.copy(color = Ob.Ash))
             Spacer(Modifier.height(28.dp))
             Txt(
-                "ALLOW CAMERA", Ob.Label.copy(color = Ob.Ink),
+                "אישור גישה למצלמה", Ob.LabelHe.copy(color = Ob.Ink),
                 Modifier.background(Ob.Ivory, RoundedCornerShape(50)).press(onGrant).padding(horizontal = 22.dp, vertical = 12.dp),
             )
         }

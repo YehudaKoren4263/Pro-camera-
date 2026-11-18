@@ -46,6 +46,35 @@ object MediaSaver {
         return uri
     }
 
+    /**
+     * Saves a computed image (time modes, double exposure): look applied, JPEG at quality 95,
+     * EXIF records what made it. The bitmap must already be upright.
+     */
+    fun saveBitmap(context: Context, bitmap: Bitmap, look: Look, name: String, description: String): Uri? {
+        val src = if (look.isNeutral) bitmap else Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888).also {
+            Canvas(it).drawBitmap(bitmap, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(ColorMatrix(look.matrix)) })
+        }
+        val bytes = ByteArrayOutputStream().use { bos -> src.compress(Bitmap.CompressFormat.JPEG, 95, bos); bos.toByteArray() }
+        if (src !== bitmap) src.recycle()
+        val uri = insert(context, "$name.jpg", "image/jpeg") ?: return null
+        context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+        runCatching {
+            context.contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+                val exif = ExifInterface(pfd.fileDescriptor)
+                val now = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+                exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, now)
+                exif.setAttribute(ExifInterface.TAG_DATETIME, now)
+                exif.setAttribute(ExifInterface.TAG_MAKE, android.os.Build.MANUFACTURER)
+                exif.setAttribute(ExifInterface.TAG_MODEL, android.os.Build.MODEL)
+                exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Obscura · ${look.name}")
+                exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, description)
+                exif.saveAttributes()
+            }
+        }
+        publish(context, uri)
+        return uri
+    }
+
     private fun applyLook(jpeg: ByteArray, look: Look): ByteArray {
         val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return jpeg
         val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)

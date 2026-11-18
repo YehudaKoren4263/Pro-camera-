@@ -12,8 +12,19 @@ import app.obscura.camera.camera.Looks
 import app.obscura.camera.camera.ManualSettings
 import app.obscura.camera.camera.OutputFormat
 import app.obscura.camera.camera.ProbeReport
+import app.obscura.camera.time.Blend
 
-enum class Control(val label: String) { SHUTTER("SHUTTER"), ISO("ISO"), EV("EV"), WB("WB"), FOCUS("FOCUS") }
+/** Technical abbreviations stay in Latin; words are Hebrew. */
+enum class Control(val label: String) { SHUTTER("תריס"), ISO("ISO"), EV("EV"), WB("WB"), FOCUS("מיקוד") }
+
+/** Capture modes. Every mode except PHOTO runs on the time engine. */
+enum class Mode(val title: String, val time: Boolean, val durations: List<Long>, val defaultDuration: Long) {
+    PHOTO("צילום", false, emptyList(), 0),
+    LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000), 2000),
+    PANNING("פאנינג", true, listOf(250, 500, 1000), 500),
+    TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000), 4000),
+    DOUBLE("חשיפה כפולה", true, emptyList(), 0),
+}
 
 class Histogram(
     val luma: FloatArray,
@@ -58,7 +69,18 @@ data class CameraUiState(
     val focusPoint: Offset? = null,
     val sensorOpen: Boolean = false,
     val message: String? = null,
+    // ---- Time modes ----
+    val mode: Mode = Mode.PHOTO,
+    val durations: Map<Mode, Long> = Mode.entries.associateWith { it.defaultDuration },
+    val blend: Blend = Blend.SCREEN,
+    /** First frame of a double exposure, upright, shown over the viewfinder. */
+    val doubleGhost: ImageBitmap? = null,
+    /** 0..1 while recording, null otherwise. */
+    val progress: Float? = null,
+    /** What the engine is doing right now ("מקליט", "מעבד 32 פריימים"). */
+    val busyText: String? = null,
 ) {
+    val duration get() = durations[mode] ?: mode.defaultDuration
     val activeLens get() = lenses.firstOrNull { it.key == activeLensKey }
 }
 
@@ -82,4 +104,8 @@ interface CameraActions {
     fun toggleSensor() {}
     fun exportReport() {}
     fun dismissMessage() {}
+    fun selectMode(mode: Mode) {}
+    fun selectDuration(ms: Long) {}
+    fun selectBlend(blend: Blend) {}
+    fun resetDouble() {}
 }
