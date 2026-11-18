@@ -7,6 +7,8 @@ import app.obscura.camera.time.Pyramid
 import app.obscura.camera.time.Render
 import app.obscura.camera.time.Stacker
 import app.obscura.camera.time.Combine
+import app.obscura.camera.time.RobustStacker
+import app.obscura.camera.time.TemporalMedian
 import app.obscura.camera.time.Roi
 import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
@@ -242,5 +244,90 @@ class TimeEngineTest {
     @Test fun neutralLookIsIdentity() {
         val p = rgb(12, 130, 250)
         assertEquals(p, Render.applyMatrix(p, Looks.NEUTRAL.matrix))
+    }
+
+    // ---- Techniques adopted from other makers (docs/research/techniques.md) -------------------
+
+    private fun lumaAt(f: YuvFrame, x: Int, y: Int) = f.y[y * f.w + x].toInt() and 0xFF
+
+    /** A static textured scene plus per-frame sensor noise (deterministic). */
+    private fun noisy(i: Int, sigma: Int, extra: (IntArray) -> Unit = {}): YuvFrame {
+        val px = IntArray(W * H) { k ->
+            val x = k % W; val y = k / W
+            val t = texture(x, y) / 2 + 60
+            val n = ((hash(x + i * 7919, y + i * 104729) - 128) * sigma) / 128
+            rgb(t + n, t + n, t + n)
+        }
+        extra(px)
+        return Yuv.fromArgb(px, W, H)
+    }
+
+    @Test fun nightMergeCutsNoiseWithoutGhosts() {
+        // A bright square walks through the frame; the reference (frame 0) has it at x = 20.
+        val frames = (0 until 10).map { i ->
+            noisy(i, 40) { px -> val sx = 20 + i * 28; for (y in 90 until 130) for (x in sx until sx + 24) if (x < W) px[y * W + x] = rgb(250, 250, 250) }
+        }
+        val night = TimeSession(TimeMode.NIGHT, null, align = false).apply { frames.forEach(::add) }.result()
+        val mean = TimeSession(TimeMode.LONG_EXPOSURE, null, align = false).apply { frames.forEach(::add) }.result()
+        save(frames[0], "night_0_single"); save(mean, "night_1_plain_average"); save(night, "night_2_obscura")
+        val clean = Yuv.fromArgb(IntArray(W * H) { k -> val t = texture(k % W, k / W) / 2 + 60; rgb(t, t, t) }, W, H)
+        // Ghost where the square passed in later frames (x around 160), against the clean scene.
+        fun err(f: YuvFrame, x0: Int, y0: Int, x1: Int, y1: Int): Double {
+            var s = 0.0; var n = 0
+            for (y in y0 until y1) for (x in x0 until x1) { s += abs(lumaAt(f, x, y) - lumaAt(clean, x, y)); n++ }
+            return s / n
+        }
+        // Ghost = error where the square passed, beyond each image's own residual noise.
+        val noiseSingle = err(frames[0], 20, 10, 300, 70)
+        val noiseMean = err(mean, 20, 10, 300, 70); val noiseNight = err(night, 20, 10, 300, 70)
+        val ghostMean = err(mean, 160, 95, 180, 125) - noiseMean
+        val ghostNight = err(night, 160, 95, 180, 125) - noiseNight
+        println("night: ghost beyond noise plain=%.1f night=%.1f · noise single=%.1f night=%.1f".format(ghostMean, ghostNight, noiseSingle, noiseNight))
+        assertTrue("plain average shows the ghost ($ghostMean)", ghostMean > 4)
+        assertTrue("night merge suppresses the ghost ($ghostNight)", ghostNight < ghostMean / 3)
+        assertTrue("night merge cuts noise", noiseNight < noiseSingle * 0.55)
+    }
+
+    @Test fun cleanPlateRemovesPassersby() {
+        // Nine frames; a dark "person" crosses the scene, covering any pixel in at most 2 frames.
+        val frames = (0 until 9).map { i ->
+            noisy(i, 6) { px -> val sx = 10 + i * 34; for (y in 60 until 200) for (x in sx until sx + 30) if (x < W) px[y * W + x] = rgb(20, 24, 30) }
+        }
+        val clean = TimeSession(TimeMode.CLEAN_PLATE, null, align = false).apply { frames.forEach(::add) }.result()
+        val mean = TimeSession(TimeMode.LONG_EXPOSURE, null, align = false).apply { frames.forEach(::add) }.result()
+        save(frames[4], "clean_0_single"); save(mean, "clean_1_plain_average"); save(clean, "clean_2_obscura")
+        var worst = 0; var meanGhost = 0.0; var n = 0
+        for (y in 70 until 190) for (x in 10 until 300) {
+            val t = texture(x, y) / 2 + 60
+            worst = maxOf(worst, abs(lumaAt(clean, x, y) - t)); meanGhost += abs(lumaAt(mean, x, y) - t); n++
+        }
+        println("clean plate: worst error %d, plain-average ghost %.1f".format(worst, meanGhost / n))
+        assertTrue("passersby removed (worst error $worst)", worst < 30)
+        assertTrue("plain average keeps a ghost", meanGhost / n > 10)
+    }
+
+    @Test fun cometTrailsFadeTowardsTheTail() {
+        val frames = (0 until 20).map { i ->
+            val px = IntArray(W * H) { rgb(5, 5, 8) }
+            val cx = 20 + i * 14
+            for (y in 117..123) for (x in cx - 3..cx + 3) if (x in 0 until W) px[y * W + x] = rgb(255, 255, 255)
+            Yuv.fromArgb(px, W, H)
+        }
+        val comet = TimeSession(TimeMode.COMET, null, align = false).apply { frames.forEach(::add) }.result()
+        val trails = TimeSession(TimeMode.LIGHT_TRAILS, null, align = false).apply { frames.forEach(::add) }.result()
+        save(comet, "comet_obscura")
+        val head = lumaAt(comet, 20 + 19 * 14, 120); val tail = lumaAt(comet, 20, 120)
+        println("comet: head=$head tail=$tail · plain trails head=${lumaAt(trails, 20 + 19 * 14, 120)} tail=${lumaAt(trails, 20, 120)}")
+        assertTrue("head stays bright", head > 230)
+        assertTrue("tail fades", tail < head / 2)
+        assertEquals("plain trails do not fade", lumaAt(trails, 20 + 19 * 14, 120), lumaAt(trails, 20, 120))
+    }
+
+    @Test fun livePreviewIsSmallAndShowsTheStack() {
+        val s = TimeSession(TimeMode.LIGHT_TRAILS, null, align = false)
+        assertEquals(null, s.preview(8))
+        s.add(noisy(0, 0))
+        val p = s.preview(8)!!
+        assertEquals(W / 8, p.w); assertEquals(H / 8, p.h)
     }
 }

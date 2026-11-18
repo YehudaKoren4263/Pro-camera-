@@ -153,7 +153,7 @@ enum class Combine { MEAN, LIGHTEN }
  * Memory: 16-bit sums (255 × 256 frames fits in 65535), about 3.3 bytes per pixel in total.
  * For a 12.6 MP stream that is ~42 MB instead of ~156 MB with int sums and counts.
  */
-class Stacker(val w: Int, val h: Int, private val combine: Combine) {
+class Stacker(val w: Int, val h: Int, private val combine: Combine, private val decay: Float = 1f) : Stack {
     companion object {
         /** Mean sums are 16-bit: 255 × 256 = 65280. Frames past this are ignored, not overflowed. */
         const val MAX_MEAN_FRAMES = 256
@@ -168,12 +168,13 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine) {
     private val sv = CharArray(cw * ch)
     /** LIGHTEN only: the brightest 2x2 luma sum seen per chroma site (chroma follows it). */
     private val blockLuma: ShortArray? = if (combine == Combine.LIGHTEN) ShortArray(cw * ch) { -1 } else null
-    var frames = 0; private set
+    override var frames = 0; private set
     private var minDx = 0; private var maxDx = 0; private var minDy = 0; private var maxDy = 0
 
-    fun add(f: YuvFrame, dx: Int = 0, dy: Int = 0) {
+    override fun add(f: YuvFrame, dx: Int, dy: Int) {
         require(f.w == w && f.h == h)
         if (combine == Combine.MEAN && frames >= MAX_MEAN_FRAMES) return
+        if (combine == Combine.LIGHTEN && decay < 1f && frames > 0) fade()
         minDx = min(minDx, dx); maxDx = max(maxDx, dx); minDy = min(minDy, dy); maxDy = max(maxDy, dy)
         val fy = f.y; val fu = f.u; val fv = f.v
 
@@ -216,8 +217,24 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine) {
         frames++
     }
 
+    /**
+     * Comet trails: before each new frame the stored light fades by [decay], so older parts of a
+     * trail grow dim and the newest end stays bright, like a comet's tail.
+     */
+    private fun fade() {
+        val q = (decay * 256).roundToInt()
+        for (i in sy.indices) sy[i] = ((sy[i].code * q) shr 8).toChar()
+        blockLuma?.let { bl -> for (i in bl.indices) if (bl[i] > 0) bl[i] = ((bl[i] * q) shr 8).toShort() }
+    }
+
+    override fun preview(step: Int): YuvFrame {
+        val n = if (combine == Combine.MEAN) max(1, min(frames, MAX_MEAN_FRAMES)) else 1
+        return sample(w, h, step, { x, y -> sy[y * w + x].code / n },
+            { x, y -> val i = (y / 2).coerceAtMost(ch - 1) * cw + (x / 2).coerceAtMost(cw - 1); su[i].code / n to sv[i].code / n })
+    }
+
     /** The merged frame, cropped to the region all frames covered, dithered to 8 bits. */
-    fun result(): YuvFrame {
+    override fun result(): YuvFrame {
         check(frames > 0) { "no frames" }
         // Even crop origin keeps chroma sites aligned with luma.
         val left = ((-minDx).coerceAtLeast(0) + 1) and 1.inv(); val right = (w - maxDx).coerceAtMost(w)
@@ -253,21 +270,38 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine) {
     }
 }
 
-/** What each mode aligns to and how it combines. */
-enum class TimeMode(val combine: Combine, val alignToSubject: Boolean) {
-    LONG_EXPOSURE(Combine.MEAN, false),
-    PANNING(Combine.MEAN, true),
-    LIGHT_TRAILS(Combine.LIGHTEN, false),
+/** What each mode aligns to and which stack combines it. */
+enum class TimeMode(val alignToSubject: Boolean) {
+    /** Mean of the burst: silky water, smooth clouds (computational ND). */
+    LONG_EXPOSURE(false),
+    /** Mean aligned on the tapped subject: sharp subject, streaked background. */
+    PANNING(true),
+    /** Brightest value per pixel: light trails, only new light is added. */
+    LIGHT_TRAILS(false),
+    /** Light trails whose older parts fade: comet tails. */
+    COMET(false),
+    /** Reference-based robust merge: less noise, no ghosts from movement. */
+    NIGHT(false),
+    /** Temporal median: people and cars passing through disappear. */
+    CLEAN_PLATE(false);
+
+    fun newStack(w: Int, h: Int): Stack = when (this) {
+        LONG_EXPOSURE, PANNING -> Stacker(w, h, Combine.MEAN)
+        LIGHT_TRAILS -> Stacker(w, h, Combine.LIGHTEN)
+        COMET -> Stacker(w, h, Combine.LIGHTEN, decay = 0.94f)
+        NIGHT -> RobustStacker(w, h)
+        CLEAN_PLATE -> TemporalMedian(w, h)
+    }
 }
 
 /** Runs a mode over a stream of frames. Not thread-safe: feed from one thread. */
 class TimeSession(val mode: TimeMode, private val subject: Roi?, private val align: Boolean = true) {
     private var ref: Pyramid? = null
-    private var stack: Stacker? = null
+    private var stack: Stack? = null
     var maxShift = 0; private set
 
     fun add(f: YuvFrame) {
-        val s = stack ?: Stacker(f.w, f.h, mode.combine).also { stack = it }
+        val s = stack ?: mode.newStack(f.w, f.h).also { stack = it }
         if (!align) { s.add(f); return }
         val p = Pyramid(f)
         val r = ref ?: p.also { ref = it }
@@ -279,6 +313,8 @@ class TimeSession(val mode: TimeMode, private val subject: Roi?, private val ali
 
     val frames get() = stack?.frames ?: 0
     fun result(): YuvFrame = checkNotNull(stack) { "no frames" }.result()
+    /** Live composite: the stack so far, every [step] pixels; null before the first frame. */
+    fun preview(step: Int): YuvFrame? = stack?.preview(step)
 }
 
 // ---- Colour conversion and double exposure -----------------------------------------------------
