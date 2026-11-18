@@ -251,4 +251,7 @@ class ScreenSnapshotTest {
         val bmp = android.graphics.Bitmap.createBitmap(out, w, h, android.graphics.Bitmap.Config.ARGB_8888)
         shot(base.copy(portrait = app.obscura.camera.ui.PortraitStudio(bmp.asImageBitmap(), p, 1.6f, 0.1f, rendering = false)))
     }
+
+    @Test fun portraitLiveAperture() = shot(base.copy(frontLens = front, mode = Mode.PORTRAIT, bokehLive = true, bokehStrength = true, aperture = 1.4f,
+        zoom = 2f, rawActive = false, jpegMp = 12.6f))
 }

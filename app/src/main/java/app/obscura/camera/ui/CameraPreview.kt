@@ -22,6 +22,9 @@ import kotlinx.coroutines.withContext
  * Live viewfinder. The look runs on the GPU as a RenderEffect (API 31+), so what you see is
  * the colour you will get in the JPEG. The histogram samples the raw preview, before the look.
  */
+/** View tag key for the effect state (look + retouch). */
+private val R_KEY = "obscura-effect".hashCode() or 0x7F000000
+
 @Composable
 fun CameraPreview(
     look: Look,
@@ -32,6 +35,8 @@ fun CameraPreview(
     modifier: Modifier = Modifier,
     /** Small upright preview pixels for the composition coach; null = not needed. */
     onPixels: ((IntArray, Int, Int) -> Unit)? = null,
+    /** Live skin retouch strength (0 = off). */
+    retouch: Float = 0f,
 ) {
     var view by remember { mutableStateOf<TextureView?>(null) }
     val texture by rememberUpdatedState(onTexture)
@@ -60,9 +65,11 @@ fun CameraPreview(
             }
         },
         update = { tv ->
-            if (Build.VERSION.SDK_INT >= 31 && tv.tag != look.id) {
+            val key = look.id + "|" + retouch
+            if (Build.VERSION.SDK_INT >= 31 && tv.getTag(R_KEY) != key) {
+                tv.setTag(R_KEY, key)
                 tv.tag = look.id
-                tv.setRenderEffect(LookShader.effect(look, tv.width, tv.height))
+                tv.setRenderEffect(LookShader.effect(look, tv.width, tv.height, retouch))
             }
         },
     )

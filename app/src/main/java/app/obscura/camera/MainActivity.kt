@@ -106,7 +106,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             look = state.look, histogramOn = state.histogramOn,
                             onTexture = vm::onTextureAvailable, onTextureGone = vm::onTextureDestroyed,
                             onHistogram = vm::onHistogram, modifier = m,
-                            onPixels = if (state.coachOn) vm::onPreviewPixels else null,
+                            onPixels = vm::onPreviewPixels,
+                            retouch = if (state.selfie || state.mode == app.obscura.camera.ui.Mode.PORTRAIT) state.retouch else 0f,
                         )
                     }
                 }

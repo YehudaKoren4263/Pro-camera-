@@ -40,6 +40,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -293,64 +295,121 @@ private fun LookCard(look: Look, selected: Boolean, onClick: () -> Unit) {
 /** Settings for the active time mode: duration, or blend for double exposure. */
 @Composable
 fun TimePanel(s: CameraUiState, a: CameraActions) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         when (s.mode) {
             Mode.DOUBLE -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Txt(if (s.doubleGhost == null) "פריים ראשון" else "פריים שני", Ob.LabelHe.copy(color = Ob.Ivory))
-                    Spacer(Modifier.width(8.dp))
+                PanelHeader("חשיפה כפולה", if (s.doubleGhost == null) "צלם את הפריים הראשון" else "כוון את השני מעל הראשון. כל עדשה, גם סלפי") {
                     Txt(ltr(if (s.doubleGhost == null) "1/2" else "2/2"), Ob.Mono.copy(color = Ob.Brass))
-                    Spacer(Modifier.weight(1f))
-                    if (s.doubleGhost != null) Txt("התחל מחדש", Ob.LabelHe, Modifier.press(a::resetDouble).padding(6.dp))
+                    if (s.doubleGhost != null) { Spacer(Modifier.width(10.dp)); Txt("מחדש", Ob.LabelHe.copy(color = Ob.Ivory), Modifier.press(a::resetDouble).padding(4.dp)) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(Blend.SCREEN to "מסך", Blend.LIGHTEN to "הבהרה", Blend.DARKEN to "הכהיה", Blend.AVERAGE to "ממוצע").forEach { (b, label) ->
-                        Chip(label, s.blend == b) { a.selectBlend(b) }
-                    }
-                }
+                Segmented(listOf("מסך" to Blend.SCREEN, "הבהרה" to Blend.LIGHTEN, "הכהיה" to Blend.DARKEN, "ממוצע" to Blend.AVERAGE), s.blend) { a.selectBlend(it) }
             }
             Mode.PORTRAIT -> {
-                Txt("המצלמה סורקת את הפוקוס ומודדת עומק לכל פיקסל, ואז מרנדרת בוקה אופטי. אחרי הצילום: צמצם, מיקוד ואופי עדשה.",
-                    Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2)
-                Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    app.obscura.camera.depth.BokehShape.entries.forEach { sh -> Chip(sh.label, s.bokehShape == sh) { a.selectBokehShape(sh) } }
+                PanelHeader("פורטרט", when {
+                    !s.portraitLive -> "סריקת פוקוס מודדת עומק. צורת הבוקה והמיקוד אחרי הצילום"
+                    s.bokehLive && s.bokehStrength -> "הצמצם משנה את הרקע בזמן אמת"
+                    s.bokehLive -> "בוקה חי של המכשיר. בגרסה הזו העוצמה קבועה"
+                    else -> "פותח את מנוע הבוקה…"
+                })
+                ScrollRow {
+                    Segmented(listOf("בוקה חי" to true, "עומק מדויק" to false), s.portraitLive) { a.setPortraitLive(it) }
+                    Spacer(Modifier.width(10.dp))
+                    RetouchControl(s, a)
                 }
+                if (s.portraitLive) ApertureDial(s, a)
+                else ScrollRow(spacing = 6.dp) { app.obscura.camera.depth.BokehShape.entries.forEach { sh -> Chip(sh.label, s.bokehShape == sh) { a.selectBokehShape(sh) } } }
             }
             Mode.MACRO -> {
-                Txt("התקרב עד 10 ס״מ. הפוקוס עובר דרך כמה מישורים והם מתמזגים: הכול חד, מהקדמי עד האחורי.",
-                    Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Txt("מישורים", Ob.LabelHe.copy(color = Ob.Ivory))
-                    listOf(6, 10, 14).forEach { n -> Chip(ltr("$n"), s.macroPlanes == n) { a.setMacroPlanes(n) } }
+                PanelHeader("מאקרו", "עד 10 ס״מ. כמה מישורי פוקוס מתמזגים לתמונה חדה מקדימה ועד אחורה")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Txt("מישורים", Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.5.sp)); Spacer(Modifier.width(10.dp))
+                    Segmented(listOf(6, 10, 14).map { ltr("$it") to it }, s.macroPlanes) { a.setMacroPlanes(it) }
                 }
             }
             else -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Txt(
-                        when (s.mode) {
-                            Mode.PANNING -> if (s.zoomBurst) "הקש על הנושא: הוא נשאר חד, והכול נמרח ממנו החוצה כמו סיבוב טבעת זום."
-                                else "הקש על הנושא. הוא יישאר חד, הרקע יימרח."
-                            Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
-                            Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, ומה שזז לא משאיר רוח רפאים."
-                            Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר בתמונה ייעלם."
-                            else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד."
-                        },
-                        Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2, modifier = Modifier.weight(1f),
-                    )
-                    if (s.mode == Mode.LONG && s.duration > 0) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass)) }
-                }
-                if (s.mode == Mode.PANNING) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Chip("פאנינג", !s.zoomBurst) { a.setZoomBurst(false) }
-                    Chip("מריחת זום", s.zoomBurst) { a.setZoomBurst(true) }
+                val title = if (s.mode == Mode.PANNING && s.zoomBurst) "מריחת זום" else s.mode.title
+                PanelHeader(title, when (s.mode) {
+                    Mode.PANNING -> if (s.zoomBurst) "הקש על הנושא: הוא נשאר חד, והכול נמרח ממנו החוצה" else "הקש על הנושא ועקוב אחריו. הוא חד, הרקע נמרח"
+                    Mode.TRAILS -> "כל אור שזז משאיר שובל. לילה, כבישים, כוכבים"
+                    Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, בלי רוחות רפאים"
+                    Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר נעלם"
+                    else -> "מים, עננים ואנשים נמרחים. מה שעומד נשאר חד"
+                }) { if (s.mode == Mode.LONG && s.duration > 0) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass, fontSize = 11.sp)) } }
+                if (s.mode == Mode.PANNING) ScrollRow {
+                    Segmented(listOf("פאנינג" to false, "מריחת זום" to true), s.zoomBurst) { a.setZoomBurst(it) }
                     if (s.zoomBurst) {
-                        Spacer(Modifier.width(4.dp))
-                        listOf("עדינה" to 0.08f, "בינונית" to 0.15f, "חזקה" to 0.26f).forEach { (l, v) -> Chip(l, s.burstStrength == v) { a.setBurstStrength(v) } }
+                        Spacer(Modifier.width(10.dp))
+                        Segmented(listOf("עדינה" to 0.08f, "בינונית" to 0.15f, "חזקה" to 0.26f), s.burstStrength) { a.setBurstStrength(it) }
                     }
                 }
-                Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    s.mode.durations.forEach { ms -> Chip(formatDuration(ms).let { if (ms > 0) ltr(it) else it }, s.duration == ms) { a.selectDuration(ms) } }
-                    if (s.mode == Mode.TRAILS) Chip("שובל שביט", s.comet) { a.toggleComet() }
+                ScrollRow {
+                    Segmented(s.mode.durations.map { ms -> formatDuration(ms).let { if (ms > 0) ltr(it) else it } to ms }, s.duration) { a.selectDuration(it) }
+                    if (s.mode == Mode.TRAILS) { Spacer(Modifier.width(10.dp)); Chip("שובל שביט", s.comet) { a.toggleComet() } }
                 }
+            }
+        }
+    }
+}
+
+/** Selfie context: skin retouch, live. */
+@Composable
+fun SelfiePanel(s: CameraUiState, a: CameraActions) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        PanelHeader("סלפי", "ליטוש עור חי: רק העור מוחלק, עיניים ושיער נשארים חדים")
+        RetouchControl(s, a)
+    }
+}
+
+@Composable
+private fun RetouchControl(s: CameraUiState, a: CameraActions) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Txt("ליטוש", Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.5.sp)); Spacer(Modifier.width(8.dp))
+        Segmented(listOf("ללא" to 0f, "עדין" to 0.35f, "חזק" to 0.7f), s.retouch) { a.setRetouch(it) }
+    }
+}
+
+/** The virtual aperture, as a lens ring: f/0.95 .. f/16. */
+@Composable
+private fun ApertureDial(s: CameraUiState, a: CameraActions) {
+    val stops = listOf(0.95f, 1.2f, 1.4f, 1.8f, 2f, 2.8f, 4f, 5.6f, 8f, 11f, 16f)
+    val sel = stops.indices.minByOrNull { kotlin.math.abs(stops[it] - s.aperture) } ?: 3
+    Ltr { RulerDial(stops.map { "ƒ" + (if (it % 1f == 0f) "${it.toInt()}" else "$it") }, sel, s.bokehLive && s.bokehStrength, onSelect = { a.setAperture(stops[it]) }) }
+}
+
+/** A title, a one-line explanation, and an optional trailing readout. */
+@Composable
+fun PanelHeader(title: String, hint: String, trailing: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Txt(title, Ob.LabelHe.copy(color = Ob.Ivory, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold))
+        Box(Modifier.padding(horizontal = 8.dp).size(3.dp).background(Ob.Smoke, CircleShape))
+        Txt(hint, Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.sp, fontWeight = FontWeight.Normal), Modifier.weight(1f))
+        trailing()
+    }
+}
+
+@Composable
+private fun ScrollRow(spacing: androidx.compose.ui.unit.Dp = 0.dp, content: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(spacing), verticalAlignment = Alignment.CenterVertically) { content() }
+}
+
+/**
+ * Segmented control: one quiet capsule, the chosen option lit in ivory. Used for every
+ * either-or choice, so the whole app speaks one visual language.
+ */
+@Composable
+fun <T> Segmented(options: List<Pair<String, T>>, selected: T, onSelect: (T) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Row(Modifier.background(Color(0x14EDE8DF), RoundedCornerShape(50)).border(0.6.dp, Ob.Hairline, RoundedCornerShape(50)).padding(3.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        options.forEach { (label, v) ->
+            val on = v == selected
+            val bg by animateColorAsState(if (on) Ob.Ivory else Color.Transparent, tween(200), label = "seg")
+            val fg by animateColorAsState(if (on) Ob.Ink else Ob.Ash, tween(200), label = "segt")
+            Box(Modifier.background(bg, RoundedCornerShape(50))
+                .press { if (!on) { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onSelect(v) } }
+                .padding(horizontal = 13.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
+                Txt(label, labelStyleFor(label).copy(color = fg, fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium))
             }
         }
     }
@@ -378,10 +437,11 @@ fun formatDuration(ms: Long): String = when {
 
 @Composable
 fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
-    val border by animateColorAsState(if (selected) Ob.Brass else Ob.Hairline, tween(180), label = "chip")
+    val bg by animateColorAsState(if (selected) Color(0x33C9A66B) else Color(0x0FEDE8DF), tween(200), label = "chip")
+    val border by animateColorAsState(if (selected) Ob.Brass.copy(alpha = 0.8f) else Color.Transparent, tween(200), label = "chipb")
     Txt(
-        label, labelStyleFor(label).copy(color = if (selected) Ob.Ivory else Ob.Ash, fontSize = 12.sp),
-        Modifier.border(0.8.dp, border, RoundedCornerShape(50)).press(onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+        label, labelStyleFor(label).copy(color = if (selected) Ob.Ivory else Ob.Ash, fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium),
+        Modifier.background(bg, RoundedCornerShape(50)).border(0.6.dp, border, RoundedCornerShape(50)).press(onClick).padding(horizontal = 13.dp, vertical = 7.dp),
     )
 }
 
@@ -390,8 +450,19 @@ fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 fun ModeStrip(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
     val haptic = LocalHapticFeedback.current
+    val list = androidx.compose.foundation.lazy.rememberLazyListState()
+    // Keep the chosen mode in view, with its neighbour visible for context.
+    androidx.compose.runtime.LaunchedEffect(s.mode) { list.animateScrollToItem((Mode.entries.indexOf(s.mode) - 1).coerceAtLeast(0)) }
     LazyRow(
-        modifier.fillMaxWidth().height(34.dp),
+        modifier.fillMaxWidth().height(34.dp)
+            // Soft fade at both edges: the strip scrolls, it is not cut.
+            .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
+            .drawWithContent {
+                drawContent()
+                drawRect(androidx.compose.ui.graphics.Brush.horizontalGradient(0f to Color.Transparent, 0.08f to Color.Black, 0.92f to Color.Black, 1f to Color.Transparent),
+                    blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+            },
+        state = list,
         horizontalArrangement = Arrangement.spacedBy(17.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
         contentPadding = PaddingValues(horizontal = Ob.gutter),

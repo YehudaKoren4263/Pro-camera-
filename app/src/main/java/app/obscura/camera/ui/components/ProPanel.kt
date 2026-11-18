@@ -96,6 +96,8 @@ fun ProPanel(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) 
                     DialPanel(Control.SHUTTER, s, a); Spacer(Modifier.height(6.dp))
                     DialPanel(Control.ISO, s, a); Spacer(Modifier.height(6.dp))
                     DialPanel(Control.EV, s, a)
+                    Explain("צמצם " + ltr("ƒ" + String.format(java.util.Locale.US, "%.1f", s.live.aperture ?: s.activeInfo?.apertures?.firstOrNull() ?: 1.7f)) +
+                        ": קבוע בחומרה בכל עדשות הטלפון. צמצם וירטואלי (בוקה חי) נמצא במצב פורטרט.")
                     Choice("מדידה", Metering.entries.map { it.label to it }, m.metering, when (m.metering) {
                         Metering.MATRIX -> "מודד את כל הפריים. בטוח ברוב המצבים."
                         Metering.CENTER -> "משקל למרכז. טוב לפורטרטים."

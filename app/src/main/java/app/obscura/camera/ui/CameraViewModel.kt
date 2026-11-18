@@ -120,6 +120,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         controller.update(s.settings, s.natural)
         // RAW is always streamed for photos: we develop it ourselves. The format toggle only
         // decides whether the DNG is also kept.
+        if (s.mode == Mode.PORTRAIT && s.portraitLive) {
+            // The maker's portrait engine runs on the logical cameras (back "0", front).
+            val id = if (s.selfie) lens.cameraId else (s.report?.lenses?.firstOrNull { it.cameraId == "0" }?.cameraId ?: "0")
+            controller.openBokeh(id, lens, t, if (s.selfie) 1f else s.zoom.coerceAtLeast(1f))
+            controller.setBokehStrength(strengthFor(s.aperture))
+            return
+        }
         controller.open(lens, t, true, time = s.mode.time)
     }
 
@@ -152,6 +159,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun setZoom(zoom: Float) {
         val s = _state.value
         if (s.capturing) return
+        if (s.bokehLive) {
+            // Live bokeh runs on the logical camera: its own zoom ratio, no lens switching.
+            val z = zoom.coerceIn(1f, 4f)
+            _state.update { it.copy(zoom = z) }; controller.setBokehZoom(z); return
+        }
         if (s.selfie) {
             // One front lens: zoom is a centred crop.
             val z = zoom.coerceIn(1f, 4f)
@@ -214,7 +226,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     private val coach = CompositionCoach()
 
     /** Called with the small upright preview (about 96 x 128), ~5 times a second. */
+    /** The last small preview frame: what the photographer is looking at (for tone matching). */
+    @Volatile private var seen: IntArray? = null
+
     fun onPreviewPixels(px: IntArray, w: Int, h: Int) {
+        seen = px
         val s = _state.value
         val busy = s.capturing || s.gallery != null || s.studio != null || s.proOpen || s.sensorOpen || s.looksOpen ||
             s.activeControl != null || s.portrait != null || s.settingsOpen
@@ -337,7 +353,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 if (!s.mode.time) notify("אין RAW בעדשה הזו: צבעי המכשיר")
             }
             Mode.DOUBLE -> shootDouble()
-            Mode.PORTRAIT -> shootPortrait(s)
+            Mode.PORTRAIT -> if (s.bokehLive) { _state.update { it.copy(capturing = true, busyText = "פורטרט") }; controller.captureBokeh() } else shootPortrait(s)
             Mode.MACRO -> shootMacro(s)
             else -> recordTime(s)
         }
@@ -431,6 +447,47 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
     override fun setMacroPlanes(n: Int) = _state.update { it.copy(macroPlanes = n) }
 
+    /** Virtual aperture -> bokeh strength: f/0.95 is 100, f/16 is 0, logarithmic like a ring. */
+    private fun strengthFor(f: Float): Int {
+        val lo = kotlin.math.ln(0.95f); val hi = kotlin.math.ln(16f)
+        return ((hi - kotlin.math.ln(f.coerceIn(0.95f, 16f))) / (hi - lo) * 100f).toInt()
+    }
+
+    override fun setPortraitLive(live: Boolean) {
+        if (live == _state.value.portraitLive || _state.value.capturing) return
+        _state.update { it.copy(portraitLive = live, bokehLive = false) }
+        open()
+        notify(if (live) "בוקה חי: הצמצם משנה את הרקע בזמן אמת" else "עומק מדויק: סריקת פוקוס, ובוקה לבחירה אחרי הצילום")
+    }
+
+    override fun setAperture(f: Float) {
+        _state.update { it.copy(aperture = f) }
+        controller.setBokehStrength(strengthFor(f))
+    }
+
+    override fun setRetouch(v: Float) = _state.update { it.copy(retouch = v) }
+
+    override fun onBokehUnavailable() {
+        _state.update { it.copy(portraitLive = false, bokehLive = false) }
+        notify("אין במכשיר מנוע בוקה חי למצלמה הזו. עובר לעומק מדויק")
+        viewModelScope.launch(Dispatchers.Main) { open() }
+    }
+
+    /** Live bokeh photo from the maker's engine: our retouch and look on top, then saved. */
+    override fun onBokehJpeg(jpeg: ByteArray, rotation: Int) {
+        val s = _state.value
+        saveComputed("פורטרט", "Obscura portrait · live bokeh · f/${s.aperture}", retouch = s.retouch) {
+            val opts = android.graphics.BitmapFactory.Options().apply { inMutable = true }
+            var bmp = android.graphics.BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts) ?: error("decode")
+            if (rotation != 0) {
+                val r = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, android.graphics.Matrix().apply { postRotate(rotation.toFloat()) }, true)
+                bmp.recycle(); bmp = if (r.isMutable) r else r.copy(Bitmap.Config.ARGB_8888, true)
+            }
+            if (!s.look.isNeutral) MediaSaver.applyLookInPlace(bmp, s.look)
+            bmp
+        }
+    }
+
     override fun portraitFocus(x: Float, y: Float) {
         val d = portraitPreviewDepth ?: return
         val st = _state.value.portrait ?: return
@@ -456,7 +513,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         viewModelScope.launch(Dispatchers.Default) {
             val look = _state.value.look
             val p = st.params.copy(showDepth = false)
-            saveComputed("פורטרט", "Obscura portrait · depth from focus · ${p.shape.name.lowercase()} · f/${p.fNumber}") {
+            saveComputed("פורטרט", "Obscura portrait · depth from focus · ${p.shape.name.lowercase()} · f/${p.fNumber}", retouch = _state.value.retouch) {
                 // Bokeh at quarter size (where blur lives), the sharp photo at full size.
                 val sw = full.w / 4; val sh = full.h / 4
                 val smallBmp = YuvImages.toBitmap(full, 0, null, step = 4)
@@ -528,6 +585,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     private fun shootRaw(s: CameraUiState) {
         val n = if (s.hiRes) s.burstFrames else 1
+        // What the photographer saw when pressing the shutter: the brightness to match.
+        val seenAtShutter = seen?.copyOf()
         val crop = controller.zoomRatio
         val sr = if (n > 1) SuperResolution(2) else null
         var single: YuvFrame? = null
@@ -556,8 +615,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                     sr.result { p -> _state.update { it.copy(progress = 0.5f + p / 2f) } }.also { sr.clear() }
                 } else single!!
                 single = null
-                saveComputed(if (sr != null) "צילום 50MP" else "צילום", "Obscura RAW · own colour · $count frames · ${out.w}x${out.h}", dng, name) {
-                    YuvImages.toBitmap(out, stats.orientation, look)
+                // Same brightness as the viewfinder (our colour, its tones): no gap in the gallery.
+                val matched = seenAtShutter?.let { px ->
+                    app.obscura.camera.camera.ToneMatch.apply(out, app.obscura.camera.camera.ToneMatch.curve(
+                        app.obscura.camera.camera.ToneMatch.histogram(out), app.obscura.camera.camera.ToneMatch.histogram(px)))
+                } ?: out
+                saveComputed(if (sr != null) "צילום 50MP" else "צילום", "Obscura RAW · own colour · $count frames · ${out.w}x${out.h}", dng, name,
+                    retouch = if (s.selfie) s.retouch else 0f) {
+                    YuvImages.toBitmap(matched, stats.orientation, look)
                 }
             } catch (e: OutOfMemoryError) {
                 sr?.clear()
@@ -909,9 +974,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     /** Renders, saves and publishes a computed image. Never leaves the shutter busy. */
-    private fun saveComputed(label: String, description: String, dng: Uri? = null, fileName: String? = null, render: () -> Bitmap) {
+    private fun saveComputed(label: String, description: String, dng: Uri? = null, fileName: String? = null, retouch: Float = 0f, render: () -> Bitmap) {
         try {
             val bmp = render()
+            if (retouch > 0f && bmp.isMutable) app.obscura.camera.camera.Retouch.apply(bmp, retouch)
             val name = fileName ?: ("OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date()))
             // The look was applied while rendering; the saver only records its name.
             val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description, lookApplied = true, quality = _state.value.jpegQuality)
@@ -973,6 +1039,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         _state.update {
             it.copy(
                 rawActive = session.rawActive, rawRefused = session.rawRefused,
+                bokehLive = session.bokeh, bokehStrength = session.bokehStrength,
                 jpegMp = session.jpeg.width * session.jpeg.height / 1e6f,
                 rawMp = session.raw?.let { r -> r.width * r.height / 1e6f } ?: 0f,
             )

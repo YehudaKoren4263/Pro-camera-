@@ -50,12 +50,19 @@ class CameraController(private val context: Context, private val listener: Liste
         fun onShotSaved(jpeg: Uri?, dng: Uri?, thumbnail: Bitmap?)
         fun onError(message: String)
         fun onResultDump(rows: List<Pair<String, String>>) {}
+        /** Live bokeh capture (vendor engine): the JPEG, and the rotation still to apply to it. */
+        fun onBokehJpeg(jpeg: ByteArray, rotation: Int) {}
+        /** The device has no live bokeh engine for this camera. */
+        fun onBokehUnavailable() {}
     }
 
     data class SessionInfo(
         val lens: Lens, val rawActive: Boolean, val jpeg: Size, val raw: Size?, val preview: Size, val rawRefused: Boolean,
         /** Set when the session streams YUV for the time modes instead of JPEG/RAW stills. */
         val yuv: Size? = null,
+        /** Live bokeh session (the maker's portrait engine), and whether its strength is ours to set. */
+        val bokeh: Boolean = false,
+        val bokehStrength: Boolean = false,
     )
 
     /** What a recording delivered. [orientation] is the rotation that makes frames upright. */
@@ -184,6 +191,118 @@ class CameraController(private val context: Context, private val listener: Liste
 
     fun close() = handler.post { closeInternal() }
 
+    // ---- Live bokeh: the maker's portrait engine, through Camera2 extensions ------------------
+
+    private var extSession: android.hardware.camera2.CameraExtensionSession? = null
+    private var extStrength = 60
+    private var extZoom = 1f
+    private var extStrengthKey = false
+    private var extZoomKey = false
+    private var extOrientationKey = false
+
+    /**
+     * Opens [cameraId] in the maker's BOKEH extension: depth from the device's own pipeline,
+     * live in the viewfinder. Its strength (Android 14+) is the "aperture" of stock cameras.
+     */
+    // Camera permission is granted before any camera is opened (MainActivity).
+    @SuppressLint("MissingPermission", "NewApi")
+    fun openBokeh(cameraId: String, lens: Lens, texture: SurfaceTexture, zoom: Float) = handler.post {
+        closeInternal()
+        this.lens = lens; timeSession = false; extZoom = zoom
+        if (android.os.Build.VERSION.SDK_INT < 31) { listener.onBokehUnavailable(); return@post }
+        try {
+            val ch = manager.getCameraCharacteristics(cameraId)
+            characteristics = ch
+            val ec = manager.getCameraExtensionCharacteristics(cameraId)
+            val ext = android.hardware.camera2.CameraExtensionCharacteristics.EXTENSION_BOKEH
+            if (ext !in ec.supportedExtensions) { listener.onBokehUnavailable(); return@post }
+            val pv = ec.getExtensionSupportedSizes(ext, SurfaceTexture::class.java)
+                .filter { isFourThree(it) && it.width <= 1920 }.maxByOrNull { it.area }
+                ?: ec.getExtensionSupportedSizes(ext, SurfaceTexture::class.java).firstOrNull() ?: Size(1440, 1080)
+            val js = ec.getExtensionSupportedSizes(ext, ImageFormat.JPEG).let { all -> all.filter { isFourThree(it) }.maxByOrNull { it.area } ?: all.maxByOrNull { it.area } }
+                ?: run { listener.onBokehUnavailable(); return@post }
+            texture.setDefaultBufferSize(pv.width, pv.height)
+            val surface = Surface(texture); previewSurface = surface
+            val jr = ImageReader.newInstance(js.width, js.height, ImageFormat.JPEG, 2)
+            jpegReader = jr
+            jr.setOnImageAvailableListener({ r -> onExtJpeg(r) }, handler)
+            val keys = if (android.os.Build.VERSION.SDK_INT >= 33) ec.getAvailableCaptureRequestKeys(ext).map { it.name }.toSet() else emptySet()
+            extStrengthKey = android.os.Build.VERSION.SDK_INT >= 34 && CaptureRequest.EXTENSION_STRENGTH.name in keys
+            extZoomKey = CaptureRequest.CONTROL_ZOOM_RATIO.name in keys
+            extOrientationKey = CaptureRequest.JPEG_ORIENTATION.name in keys
+            manager.openCamera(cameraId, executor, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    device = camera
+                    val cfg = android.hardware.camera2.params.ExtensionSessionConfiguration(ext,
+                        listOf(OutputConfiguration(surface), OutputConfiguration(jr.surface)), executor,
+                        object : android.hardware.camera2.CameraExtensionSession.StateCallback() {
+                            override fun onConfigured(session: android.hardware.camera2.CameraExtensionSession) {
+                                extSession = session
+                                extRepeat()
+                                listener.onOpened(SessionInfo(lens, false, js, null, pv, false, bokeh = true, bokehStrength = extStrengthKey))
+                            }
+                            override fun onConfigureFailed(session: android.hardware.camera2.CameraExtensionSession) = listener.onBokehUnavailable()
+                        })
+                    runCatching { camera.createExtensionSession(cfg) }.onFailure { listener.onBokehUnavailable() }
+                }
+                override fun onDisconnected(camera: CameraDevice) { camera.close(); device = null }
+                override fun onError(camera: CameraDevice, error: Int) { camera.close(); device = null; listener.onError(cameraErrorText(error)) }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "bokeh open", e); listener.onBokehUnavailable()
+        }
+    }
+
+    @SuppressLint("NewApi") // extension sessions exist only on Android 12+
+    private fun extRequest(template: Int, target: Surface): CaptureRequest? {
+        val dev = device ?: return null
+        return dev.createCaptureRequest(template).apply {
+            addTarget(target)
+            if (extStrengthKey && android.os.Build.VERSION.SDK_INT >= 34) set(CaptureRequest.EXTENSION_STRENGTH, extStrength)
+            if (extZoomKey && extZoom > 1.01f) set(CaptureRequest.CONTROL_ZOOM_RATIO, extZoom)
+        }.build()
+    }
+
+    // Only reached with an extension session open, i.e. on Android 12+.
+    @SuppressLint("NewApi")
+    private fun extRepeat() {
+        val s = extSession ?: return; val surface = previewSurface ?: return
+        runCatching { extRequest(CameraDevice.TEMPLATE_PREVIEW, surface)?.let {
+            s.setRepeatingRequest(it, executor, object : android.hardware.camera2.CameraExtensionSession.ExtensionCaptureCallback() {}) } }
+            .onFailure { Log.w(TAG, "bokeh repeat", it) }
+    }
+
+    /** Bokeh strength 0..100: the virtual aperture. */
+    fun setBokehStrength(v: Int) = handler.post { extStrength = v.coerceIn(0, 100); extRepeat() }
+    fun setBokehZoom(z: Float) = handler.post { extZoom = z; extRepeat() }
+
+    @SuppressLint("NewApi")
+    fun captureBokeh() = handler.post {
+        val s = extSession ?: return@post; val jr = jpegReader ?: return@post
+        val dev = device ?: return@post
+        runCatching {
+            val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(jr.surface)
+                if (extStrengthKey && android.os.Build.VERSION.SDK_INT >= 34) set(CaptureRequest.EXTENSION_STRENGTH, extStrength)
+                if (extZoomKey && extZoom > 1.01f) set(CaptureRequest.CONTROL_ZOOM_RATIO, extZoom)
+                if (extOrientationKey) { set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation()); set(CaptureRequest.JPEG_QUALITY, 96.toByte()) }
+            }.build()
+            s.capture(req, executor, object : android.hardware.camera2.CameraExtensionSession.ExtensionCaptureCallback() {
+                override fun onCaptureStarted(session: android.hardware.camera2.CameraExtensionSession, request: CaptureRequest, timestamp: Long) = listener.onShutter()
+                override fun onCaptureFailed(session: android.hardware.camera2.CameraExtensionSession, request: CaptureRequest) = listener.onError("צילום הבוקה נכשל")
+            })
+        }.onFailure { listener.onError("צילום הבוקה נכשל: ${it.message}") }
+    }
+
+    private fun onExtJpeg(r: ImageReader) {
+        val img = r.acquireNextImage() ?: return
+        val buf = img.planes[0].buffer
+        val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
+        img.close()
+        val rotation = if (extOrientationKey) 0 else jpegOrientation()
+        io.execute { listener.onBokehJpeg(bytes, rotation) }
+    }
+
     fun release() {
         handler.post { closeInternal(); thread.quitSafely() }
         io.shutdown()
@@ -286,6 +405,8 @@ class CameraController(private val context: Context, private val listener: Liste
             processor.execute { rec.onDone(stats) }
         }
         recording = null
+        if (android.os.Build.VERSION.SDK_INT >= 31) runCatching { extSession?.close() }
+        extSession = null
         runCatching { yuvReader?.close() }; yuvReader = null
         runCatching { session?.close() }; session = null
         runCatching { device?.close() }; device = null

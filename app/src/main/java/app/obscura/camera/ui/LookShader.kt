@@ -49,6 +49,20 @@ object LookShader {
     private val textures = HashMap<String, Bitmap>()
     @Volatile private var shaderBroken = false
 
+    /** The look, with live skin retouch underneath it when [retouch] > 0 (API 33+). */
+    fun effect(look: Look, width: Int, height: Int, retouch: Float): RenderEffect? {
+        val lookFx = effect(look, width, height)
+        if (retouch <= 0f || Build.VERSION.SDK_INT < 33 || shaderBroken) return lookFx
+        val skin = try {
+            val sh = RuntimeShader(app.obscura.camera.camera.Retouch.AGSL)
+            sh.setFloatUniform("strength", retouch)
+            sh.setFloatUniform("radius", (width * 0.006f).coerceAtLeast(2.5f))
+            RenderEffect.createRuntimeShaderEffect(sh, "image")
+        } catch (e: Throwable) { Log.w(TAG, "retouch shader unavailable", e); null } ?: return lookFx
+        // Retouch first, then the look on top: same order as the saved photo.
+        return if (lookFx == null) skin else RenderEffect.createChainEffect(lookFx, skin)
+    }
+
     fun effect(look: Look, width: Int, height: Int): RenderEffect? {
         if (look.isNeutral || Build.VERSION.SDK_INT < 31) return null
         if (Build.VERSION.SDK_INT >= 33 && !shaderBroken) {

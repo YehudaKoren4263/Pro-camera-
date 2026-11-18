@@ -55,7 +55,8 @@ data class CameraUiState(
     val activeLensKey: String? = null,
     /** Characteristics of the active lens (the physical one when streaming a sub-camera). */
     val activeInfo: CameraInfo? = null,
-    val format: OutputFormat = OutputFormat.RAW_JPEG,
+    /** JPEG by default: a DNG beside it shows up in gallery apps as a second, unprocessed photo. */
+    val format: OutputFormat = OutputFormat.JPEG,
     val rawActive: Boolean = false,
     val rawRefused: Boolean = false,
     val jpegMp: Float = 0f,
@@ -111,6 +112,15 @@ data class CameraUiState(
     /** Portrait: the lens character chosen before the shot, and the editor after it. */
     val bokehShape: app.obscura.camera.depth.BokehShape = app.obscura.camera.depth.BokehShape.DISC,
     val portrait: PortraitStudio? = null,
+    /** Portrait engine: the maker's live bokeh (aperture in the viewfinder) or our depth sweep. */
+    val portraitLive: Boolean = true,
+    /** Live bokeh is open, and its strength (the virtual aperture) is controllable. */
+    val bokehLive: Boolean = false,
+    val bokehStrength: Boolean = false,
+    /** Virtual aperture for live bokeh. */
+    val aperture: Float = 1.8f,
+    /** Skin retouch 0..1 for portraits and selfies, live in the viewfinder and in the photo. */
+    val retouch: Float = 0.35f,
     /** Macro: focus planes per stack. */
     val macroPlanes: Int = 10,
     /** Pro sheet: hold to see the scene with every setting on automatic. */
@@ -162,6 +172,9 @@ interface CameraActions {
     fun openPro() {}
     fun selectBokehShape(s: app.obscura.camera.depth.BokehShape) {}
     fun setMacroPlanes(n: Int) {}
+    fun setPortraitLive(live: Boolean) {}
+    fun setAperture(f: Float) {}
+    fun setRetouch(v: Float) {}
     fun portraitFocus(x: Float, y: Float) {}
     fun portraitParams(p: app.obscura.camera.depth.BokehParams) {}
     fun portraitSave() {}

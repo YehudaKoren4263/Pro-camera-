@@ -94,21 +94,34 @@ fun CoachTarget(tip: CompositionCoach.Tip?) {
 fun FlipButton(selfie: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(modifier.size(40.dp).background(Color(0x66000000), CircleShape).border(0.6.dp, Ob.HairlineStrong, CircleShape).press(onClick),
         contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(20.dp)) {
-            val st = Stroke(1.5.dp.toPx())
+        Canvas(Modifier.size(22.dp)) {
+            // Two arcs chasing each other around a circle, each ending in an arrowhead that
+            // follows the arc's direction: the universal "switch camera".
             val col = if (selfie) Ob.Brass else Ob.Ivory
-            // Two arcs chasing each other: the universal "switch camera".
-            drawArc(col, 200f, 140f, false, style = st)
-            drawArc(col, 20f, 140f, false, style = st)
-            val r = size.minDimension / 2; val cx = size.width / 2; val cy = size.height / 2
-            fun head(angle: Float, dir: Float) {
-                val a = Math.toRadians(angle.toDouble())
-                val px = cx + r * kotlin.math.cos(a).toFloat(); val py = cy + r * kotlin.math.sin(a).toFloat()
-                val l = 4.dp.toPx()
-                drawLine(col, Offset(px, py), Offset(px - l * dir, py - l * 0.3f), 1.5.dp.toPx())
-                drawLine(col, Offset(px, py), Offset(px - l * 0.3f * dir, py + l * dir), 1.5.dp.toPx())
+            val sw = 1.6.dp.toPx()
+            val inset = sw + 2.dp.toPx()
+            val r = size.minDimension / 2 - inset
+            val c = center
+            val arcSize = androidx.compose.ui.geometry.Size(r * 2, r * 2)
+            val topLeft = Offset(c.x - r, c.y - r)
+            val stroke = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val start = listOf(205f, 25f); val sweep = 130f
+            for (s0 in start) {
+                drawArc(col, s0, sweep, false, topLeft, arcSize, style = stroke)
+                // Arrowhead at the end of the arc, pointing along the (clockwise) tangent.
+                val end = Math.toRadians((s0 + sweep).toDouble())
+                val p = Offset(c.x + r * kotlin.math.cos(end).toFloat(), c.y + r * kotlin.math.sin(end).toFloat())
+                val tx = -kotlin.math.sin(end).toFloat(); val ty = kotlin.math.cos(end).toFloat()
+                val len = 4.5.dp.toPx()
+                for (side in listOf(-1f, 1f)) {
+                    val a = Math.toRadians((180.0 + side * 38.0))
+                    val ca = kotlin.math.cos(a).toFloat(); val sa = kotlin.math.sin(a).toFloat()
+                    val dx = tx * ca - ty * sa; val dy = tx * sa + ty * ca
+                    drawLine(col, p, Offset(p.x + dx * len, p.y + dy * len), sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                }
             }
-            head(340f, 1f); head(160f, -1f)
+            // A small lens dot in the middle.
+            drawCircle(col, radius = 1.8.dp.toPx(), center = c)
         }
     }
 }

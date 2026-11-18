@@ -35,6 +35,9 @@ import app.obscura.camera.ui.components.BusyChip
 import app.obscura.camera.ui.components.Ltr
 import app.obscura.camera.ui.components.ModeStrip
 import app.obscura.camera.ui.components.TimePanel
+import app.obscura.camera.ui.components.SelfiePanel
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.animation.animateContentSize
 import app.obscura.camera.ui.components.StudioPanel
 import app.obscura.camera.ui.components.GalleryPanel
 import app.obscura.camera.ui.components.ProPanel
@@ -170,6 +173,7 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
         s.activeControl != null -> "dial"
         s.looksOpen -> "looks"
         s.mode.time -> "time"
+        s.selfie -> "selfie"
         else -> "info"
     }
     AnimatedContent(
@@ -178,15 +182,17 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
             (fadeIn(tween(200)) + slideInVertically(tween(260)) { it / 4 }) togetherWith
                 (fadeOut(tween(140)) + slideOutVertically(tween(200)) { it / 4 })
         },
-        modifier = Modifier.fillMaxWidth().height(if (kind == "looks") 124.dp else 104.dp),
+        // The panel takes the height its controls need (never clipped); the viewfinder yields.
+        modifier = Modifier.fillMaxWidth().heightIn(min = 104.dp).animateContentSize(tween(220)),
         contentAlignment = Alignment.Center,
         label = "panel",
     ) { (k, control, _) ->
-        Box(Modifier.fillMaxWidth().height(if (k == "looks") 124.dp else 104.dp).padding(top = 10.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().heightIn(min = 104.dp).padding(top = 10.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
             when (k) {
                 "dial" -> DialPanel(control!!, s, a)
                 "looks" -> LookStrip(s, a)
                 "time" -> TimePanel(s, a)
+                "selfie" -> SelfiePanel(s, a)
                 else -> InfoLine(s)
             }
         }
