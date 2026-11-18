@@ -16,7 +16,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.Display
-import android.view.WindowManager
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -35,6 +34,25 @@ class DeepProbe(private val context: Context) {
     )
 
     private val manager = context.getSystemService(CameraManager::class.java)
+    private val errors = mutableListOf<String>()
+
+    /** Runs one probe section. A failure is recorded in the report instead of aborting the probe. */
+    private fun section(into: JSONObject, name: String, block: () -> Any) {
+        runCatching { into.put(name, block()) }.onFailure {
+            val msg = "$name: ${it.javaClass.simpleName}: ${it.message}"
+            errors += msg
+            into.put(name + "Error", msg)
+        }
+    }
+
+    private fun names(keys: List<*>?): JSONArray = JSONArray((keys ?: emptyList<Any>()).mapNotNull(::keyName).sorted())
+
+    private fun keyName(k: Any?): String? = when (k) {
+        is CameraCharacteristics.Key<*> -> k.name
+        is android.hardware.camera2.CaptureRequest.Key<*> -> k.name
+        is android.hardware.camera2.CaptureResult.Key<*> -> k.name
+        else -> k?.toString()
+    }
 
     fun run(report: ProbeReport): Pair<JSONObject, Summary> {
         val root = report.toJson()
@@ -43,24 +61,27 @@ class DeepProbe(private val context: Context) {
         val extensions = mutableMapOf<String, List<String>>()
         val vendorRequest = mutableMapOf<String, Int>()
 
-        root.put("hardware", hardware(rows))
+        section(root, "hardware") { hardware(rows) }
 
         val cams = root.getJSONArray("cameras")
         for (i in 0 until cams.length()) {
             val cam = cams.getJSONObject(i)
             val id = cam.getString("id")
             val ch = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
-            cam.put("characteristics", allValues(ch))
-            cam.put("requestKeys", JSONArray(ch.availableCaptureRequestKeys.map { it.name }.sorted()))
-            cam.put("resultKeys", JSONArray(ch.availableCaptureResultKeys.map { it.name }.sorted()))
+            section(cam, "characteristics") { allValues(ch) }
+            section(cam, "requestKeys") { names(ch.availableCaptureRequestKeys) }
+            section(cam, "resultKeys") { names(ch.availableCaptureResultKeys) }
             if (Build.VERSION.SDK_INT >= 28) {
-                cam.put("sessionKeys", JSONArray(ch.availableSessionKeys.map { it.name }.sorted()))
-                cam.put("physicalRequestKeys", JSONArray(ch.availablePhysicalCameraRequestKeys.map { it.name }.sorted()))
+                // Both are documented as nullable: null when the camera has none.
+                section(cam, "sessionKeys") { names(ch.availableSessionKeys) }
+                section(cam, "physicalRequestKeys") { names(ch.availablePhysicalCameraRequestKeys) }
             }
-            vendorRequest[id] = ch.availableCaptureRequestKeys.count { !it.name.startsWith("android.") } +
-                (if (Build.VERSION.SDK_INT >= 28) ch.availableSessionKeys.count { !it.name.startsWith("android.") } else 0)
-            cam.put("streams", streams(ch))
-            val ext = extensions(id)
+            vendorRequest[id] = runCatching {
+                (ch.availableCaptureRequestKeys?.count { !it.name.startsWith("android.") } ?: 0) +
+                    (if (Build.VERSION.SDK_INT >= 28) ch.availableSessionKeys?.count { !it.name.startsWith("android.") } ?: 0 else 0)
+            }.getOrDefault(0)
+            section(cam, "streams") { streams(ch) }
+            val ext = runCatching { extensions(id) }.getOrDefault(emptyList())
             cam.put("extensions", JSONArray(ext))
             extensions[id] = ext
         }
@@ -69,6 +90,8 @@ class DeepProbe(private val context: Context) {
                 manager.concurrentCameraIds.map { JSONArray(it.toList()) }
             }.getOrDefault(emptyList())))
         }
+        root.put("probeErrors", JSONArray(errors))
+        if (errors.isNotEmpty()) rows += "ERRORS" to "${errors.size} sections failed, details in the JSON"
         return root to Summary(rows, extensions, vendorRequest)
     }
 
@@ -197,8 +220,8 @@ class DeepProbe(private val context: Context) {
         }
 
         // Display: can the viewfinder show HDR and wide colour?
-        val display: Display? = if (Build.VERSION.SDK_INT >= 30) context.display
-        else @Suppress("DEPRECATION") context.getSystemService(WindowManager::class.java)?.defaultDisplay
+        val display: Display? = context.getSystemService(android.hardware.display.DisplayManager::class.java)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
         display?.let { d ->
             val rawHdrTypes = if (Build.VERSION.SDK_INT >= 34) d.mode.supportedHdrTypes
             else @Suppress("DEPRECATION") d.hdrCapabilities?.supportedHdrTypes
@@ -209,11 +232,11 @@ class DeepProbe(private val context: Context) {
                 put("wideColorGamut", d.isWideColorGamut)
                 put("hdr", d.isHdr)
                 put("hdrTypes", JSONArray(hdrTypes))
-                put("maxLuminance", d.hdrCapabilities?.desiredMaxLuminance?.toDouble() ?: JSONObject.NULL)
+                put("maxLuminance", d.hdrCapabilities?.desiredMaxLuminance?.takeIf { it.isFinite() }?.toDouble() ?: JSONObject.NULL)
                 put("refreshRates", JSONArray(d.supportedModes.map { it.refreshRate.toDouble() }.distinct().sorted()))
                 if (Build.VERSION.SDK_INT >= 34) {
                     put("hdrSdrRatioAvailable", d.isHdrSdrRatioAvailable)
-                    if (d.isHdrSdrRatioAvailable) put("hdrSdrRatio", d.hdrSdrRatio.toDouble())
+                    if (d.isHdrSdrRatioAvailable && d.hdrSdrRatio.isFinite()) put("hdrSdrRatio", d.hdrSdrRatio.toDouble())
                 }
             })
             rows += "DISPLAY" to buildList {
