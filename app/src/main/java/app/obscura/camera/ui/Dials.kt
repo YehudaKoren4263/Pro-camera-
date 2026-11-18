@@ -31,7 +31,14 @@ object Dials {
 
     private val manualSensor get() = { s: CameraUiState -> s.activeInfo?.manualSensor ?: true }
 
+    fun zoomStops(s: CameraUiState) = app.obscura.camera.ui.components.zoomStops(lensRatios(s))
+
     fun model(c: Control, s: CameraUiState): DialModel = when (c) {
+        Control.ZOOM -> {
+            val st = zoomStops(s)
+            DialModel(st.map { app.obscura.camera.ui.components.formatZoom(it) }, st.indices.minByOrNull { kotlin.math.abs(st[it] - s.zoom) } ?: 0,
+                enabled = s.lenses.isNotEmpty())
+        }
         Control.ISO -> {
             val l = isoLadder(s)
             DialModel(listOf("AUTO") + l.map { it.toString() }, s.settings.iso?.let { l.indexOf(it) + 1 } ?: 0,
@@ -60,27 +67,31 @@ object Dials {
     fun apply(c: Control, index: Int, s: CameraUiState): ManualSettings {
         val m = s.settings
         return when (c) {
+            Control.ZOOM -> m // zoom is not an exposure setting; the view model moves the lens
             Control.ISO -> m.copy(iso = if (index == 0) null else isoLadder(s).getOrNull(index - 1))
             Control.SHUTTER -> m.copy(shutterNs = if (index == 0) null else shutterLadder(s).getOrNull(index - 1))
             Control.EV -> m.copy(evIndex = (evRange(s).first + index).coerceIn(evRange(s)))
-            Control.WB -> m.copy(wb = WhiteBalance.entries.getOrElse(index) { WhiteBalance.AUTO })
+            Control.WB -> m.copy(wb = WhiteBalance.entries.getOrElse(index) { WhiteBalance.AUTO }, kelvin = null)
             Control.FOCUS -> m.copy(focusDiopters = if (index == 0) null else focusLadder(s).getOrNull(index - 1))
         }
     }
 
     fun reset(c: Control, m: ManualSettings): ManualSettings = when (c) {
+        Control.ZOOM -> m
         Control.ISO -> m.copy(iso = null)
         Control.SHUTTER -> m.copy(shutterNs = null)
         Control.EV -> m.copy(evIndex = 0)
-        Control.WB -> m.copy(wb = WhiteBalance.AUTO)
+        Control.WB -> m.copy(wb = WhiteBalance.AUTO, kelvin = null, tint = 0)
         Control.FOCUS -> m.copy(focusDiopters = null)
     }
 
     fun readout(c: Control, s: CameraUiState): Readout = when (c) {
+        Control.ZOOM -> Readout(app.obscura.camera.ui.components.formatZoom(s.zoom), lensRatios(s).any { kotlin.math.abs(it - s.zoom) < 0.05f })
         Control.SHUTTER -> Readout((s.settings.shutterNs ?: s.live.shutterNs)?.let(ExposureMath::formatShutter) ?: "—", s.settings.shutterNs == null)
         Control.ISO -> Readout((s.settings.iso ?: s.live.iso)?.toString() ?: "—", s.settings.iso == null)
         Control.EV -> Readout(ExposureMath.formatEv(s.settings.evIndex * evStep(s)), s.settings.evIndex == 0)
-        Control.WB -> Readout(if (s.settings.wb == WhiteBalance.AUTO) "AWB" else s.settings.wb.kelvin, s.settings.wb == WhiteBalance.AUTO)
+        Control.WB -> s.settings.kelvin?.let { Readout("${it}K", false) }
+            ?: Readout(if (s.settings.wb == WhiteBalance.AUTO) "AWB" else s.settings.wb.kelvin, s.settings.wb == WhiteBalance.AUTO)
         Control.FOCUS -> Readout(
             if (s.settings.focusDiopters == null && s.live.focusDiopters == null) "AF"
             else ExposureMath.formatFocus(s.settings.focusDiopters ?: s.live.focusDiopters),

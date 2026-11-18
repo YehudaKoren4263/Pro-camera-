@@ -47,6 +47,7 @@ import kotlin.math.abs
 sealed interface UiEvent {
     data class ViewImage(val uri: Uri) : UiEvent
     data class ShareJson(val uri: Uri) : UiEvent
+    data class ShareImage(val uri: Uri) : UiEvent
 }
 
 class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, CameraController.Listener {
@@ -137,7 +138,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
 
     private fun ratio(l: Lens, s: CameraUiState) = l.equivMm.toFloat() / mainEquiv(s)
 
-    override fun toggleZoom() = _state.update { it.copy(zoomOpen = !it.zoomOpen, activeControl = null, looksOpen = false) }
+    override fun toggleZoom() = toggleControl(Control.ZOOM)
 
     /**
      * Zoom across the real lenses: the longest lens not longer than the requested zoom, plus a
@@ -205,6 +206,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     override fun dial(control: Control, index: Int) {
+        if (control == Control.ZOOM) { Dials.zoomStops(_state.value).getOrNull(index)?.let(::setZoom); return }
         _state.update { s ->
             val next = Dials.apply(control, index, s)
             s.copy(settings = next, focusPoint = if (control == Control.FOCUS && next.focusDiopters != null) null else s.focusPoint)
@@ -213,6 +215,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     override fun resetControl(control: Control) {
+        if (control == Control.ZOOM) { setZoom(1f); return }
         _state.update { it.copy(settings = Dials.reset(control, it.settings)) }
         pushSettings()
     }
@@ -271,12 +274,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
      * 50 MP merged with sub-pixel super-resolution. Hand shake between frames is the detail.
      */
     private fun shootRaw(s: CameraUiState) {
-        val n = if (s.hiRes) 8 else 1
+        val n = if (s.hiRes) s.burstFrames else 1
         val crop = controller.zoomRatio
         val sr = if (n > 1) SuperResolution(2) else null
         var single: YuvFrame? = null
         var oom = false
-        _state.update { it.copy(capturing = true, busyText = if (n > 1) "אוסף 8 פריימי RAW" else "מפתח RAW", progress = 0f) }
+        _state.update { it.copy(capturing = true, busyText = if (n > 1) "אוסף $n פריימי RAW" else "מפתח RAW", progress = 0f) }
         controller.rawBurst(n, keepFirst = s.format == OutputFormat.RAW_JPEG, sink = { raw, meta, i ->
             if (!oom) try {
                 val f = RawDevelop.develop(raw, meta, RawDevelop.centerCrop(raw.w, raw.h, crop))
@@ -322,16 +325,104 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         controller.resetFocus()
     }
 
-    override fun openLastShot() = openStudio()
-    override fun openInGallery() { _state.value.lastShotUri?.let { _events.tryEmit(UiEvent.ViewImage(it)) } }
+    override fun openLastShot() = openGallery()
+
+    // ---- Pro panel -----------------------------------------------------------------------------
+
+    override fun openPro() {
+        controller.dumpResults = true
+        _state.update { it.copy(proOpen = true, activeControl = null, looksOpen = false) }
+    }
+    override fun closePro() { controller.dumpResults = false; _state.update { it.copy(proOpen = false) } }
+    override fun proSettings(settings: app.obscura.camera.camera.ManualSettings) { _state.update { it.copy(settings = settings) }; pushSettings() }
+    override fun resetPro() {
+        _state.update { it.copy(settings = app.obscura.camera.camera.ManualSettings(), burstFrames = 8, jpegQuality = 96, natural = true, hiRes = true) }
+        pushSettings(); notify("כל ההגדרות חזרו לברירת המחדל")
+    }
+    override fun setBurstFrames(n: Int) = _state.update { it.copy(burstFrames = n.coerceIn(1, 12)) }
+    override fun setJpegQuality(q: Int) = _state.update { it.copy(jpegQuality = q.coerceIn(80, 100)) }
+    override fun onResultDump(rows: List<Pair<String, String>>) = _state.update { it.copy(resultDump = rows) }
+
+    // ---- Gallery -------------------------------------------------------------------------------
+
+    private var galleryJob: Job? = null
+
+    private fun openGallery() {
+        _state.update { it.copy(gallery = Gallery(), activeControl = null, looksOpen = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val items = queryPhotos()
+            if (items.isEmpty()) { _state.update { it.copy(gallery = null) }; notify("עוד אין תמונות. צלם קודם."); return@launch }
+            _state.update { it.copy(gallery = Gallery(items, 0)) }
+            loadGalleryImage(0)
+        }
+    }
+
+    /** This app's JPEGs, newest first (an app always sees its own MediaStore entries). */
+    private fun queryPhotos(): List<Uri> {
+        val cr = getApplication<Application>().contentResolver
+        val base = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val out = ArrayList<Uri>()
+        runCatching {
+            cr.query(base, arrayOf(android.provider.MediaStore.MediaColumns._ID),
+                "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${android.provider.MediaStore.MediaColumns.MIME_TYPE} = ?",
+                arrayOf("DCIM/Obscura%", "image/jpeg"), "${android.provider.MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c ->
+                while (c.moveToNext() && out.size < 500) out += android.content.ContentUris.withAppendedId(base, c.getLong(0))
+            }
+        }
+        _state.value.lastShotUri?.let { if (it !in out) out.add(0, it) }
+        return out
+    }
+
+    private fun loadGalleryImage(i: Int) {
+        galleryJob?.cancel()
+        val uri = _state.value.gallery?.items?.getOrNull(i) ?: return
+        galleryJob = viewModelScope.launch(Dispatchers.IO) {
+            val bmp = runCatching { decodeUpright(uri, 1600) }.getOrNull()
+            val info = runCatching {
+                getApplication<Application>().contentResolver.query(uri, arrayOf(
+                    android.provider.MediaStore.MediaColumns.WIDTH, android.provider.MediaStore.MediaColumns.HEIGHT,
+                    android.provider.MediaStore.MediaColumns.SIZE), null, null, null)?.use { c ->
+                    if (!c.moveToFirst()) null else {
+                        val w = c.getInt(0); val h = c.getInt(1); val size = c.getLong(2)
+                        String.format(java.util.Locale.US, "%d×%d · %.1f MP · %.1f MB", w, h, w * h / 1e6, size / 1e6)
+                    }
+                }
+            }.getOrNull()
+            if (isActive) _state.update { s -> s.gallery?.takeIf { it.index == i }?.let { s.copy(gallery = it.copy(image = bmp?.asImageBitmap(), info = info, loading = false)) } ?: s }
+        }
+    }
+
+    override fun closeGallery() { galleryJob?.cancel(); _state.update { it.copy(gallery = null) } }
+    override fun galleryIndex(i: Int) {
+        val g = _state.value.gallery ?: return
+        val k = i.coerceIn(0, (g.items.size - 1).coerceAtLeast(0))
+        if (k == g.index) return
+        _state.update { it.copy(gallery = g.copy(index = k, image = null, info = null, loading = true)) }
+        loadGalleryImage(k)
+    }
+    override fun galleryLight() { _state.value.gallery?.let { g -> g.items.getOrNull(g.index)?.let(::openStudioFor) } }
+    override fun galleryShare() { _state.value.gallery?.let { g -> g.items.getOrNull(g.index)?.let { _events.tryEmit(UiEvent.ShareImage(it)) } } }
+
+    /** "Edit with Obscura" from any gallery app: straight into the light studio. */
+    fun editExternal(uri: Uri) = openStudioFor(uri)
+    override fun openInGallery() {
+        val s = _state.value
+        (s.studio?.let { studioUri } ?: s.gallery?.let { g -> g.items.getOrNull(g.index) } ?: s.lastShotUri)
+            ?.let { _events.tryEmit(UiEvent.ViewImage(it)) }
+    }
 
     // ---- Light studio --------------------------------------------------------------------------
 
     private var studioBase: Bitmap? = null
+    private var studioUri: Uri? = null
     private var studioJob: Job? = null
 
     override fun openStudio() {
-        val uri = _state.value.lastShotUri ?: run { notify("עוד אין תמונה. צלם קודם."); return }
+        _state.value.lastShotUri?.let(::openStudioFor) ?: notify("עוד אין תמונה. צלם קודם.")
+    }
+
+    private fun openStudioFor(uri: Uri) {
+        studioUri = uri
         _state.update { it.copy(studio = Studio()) }
         viewModelScope.launch(Dispatchers.IO) {
             val base = runCatching { decodeUpright(uri, 1440) }.getOrNull()
@@ -367,7 +458,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     }
 
     override fun studioSave() {
-        val uri = _state.value.lastShotUri ?: return
+        val uri = studioUri ?: return
         val p = _state.value.studio?.params ?: return
         _state.update { s -> s.studio?.let { s.copy(studio = it.copy(saving = true)) } ?: s }
         viewModelScope.launch(Dispatchers.IO) {
@@ -381,6 +472,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 _state.update { it.copy(studio = null, lastShot = thumb.asImageBitmap(), lastShotUri = saved ?: it.lastShotUri, lastShotHasRaw = false) }
                 studioBase = null
                 notify(if (saved != null) "התאורה נשמרה כתמונה חדשה" else "השמירה נכשלה")
+                // Back in the gallery, on the new picture.
+                if (_state.value.gallery != null) {
+                    val items = queryPhotos()
+                    _state.update { it.copy(gallery = Gallery(items, 0)) }
+                    loadGalleryImage(0)
+                }
             } catch (e: Throwable) {
                 _state.update { s -> s.studio?.let { s.copy(studio = it.copy(saving = false)) } ?: s }
                 notify("השמירה נכשלה: ${e.message}")
@@ -553,7 +650,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
             val bmp = render()
             val name = fileName ?: ("OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date()))
             // The look was applied while rendering; the saver only records its name.
-            val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description, lookApplied = true)
+            val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description, lookApplied = true, quality = _state.value.jpegQuality)
             val thumb = Bitmap.createScaledBitmap(bmp, (bmp.width / 16).coerceAtLeast(1), (bmp.height / 16).coerceAtLeast(1), true)
             bmp.recycle()
             _state.update {

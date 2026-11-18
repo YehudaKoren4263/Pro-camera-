@@ -13,13 +13,38 @@ enum class WhiteBalance(val label: String, val kelvin: String, val mode: Int) {
 
 enum class OutputFormat(val label: String) { JPEG("JPEG"), RAW_JPEG("RAW+JPEG") }
 
-/** User intent. A null field means that control is automatic. */
+enum class Metering(val label: String) { MATRIX("מטריצה"), CENTER("מרכז"), SPOT("נקודה") }
+/** Tone curve the ISP uses for preview and the YUV time modes (RAW photos always use ours). */
+enum class ToneMode(val label: String) { OURS("שלנו"), DEVICE("של המכשיר"), LINEAR("לינארי") }
+
+/** User intent. A null field means that control is automatic (or left to the device). */
 data class ManualSettings(
     val iso: Int? = null,
     val shutterNs: Long? = null,
     val evIndex: Int = 0,
     val wb: WhiteBalance = WhiteBalance.AUTO,
     val focusDiopters: Float? = null,
+    // ---- Pro panel ----
+    /** Manual white balance in Kelvin, from the sensor calibration; overrides [wb]. */
+    val kelvin: Int? = null,
+    /** Green (-) to magenta (+), -10..10. */
+    val tint: Int = 0,
+    val metering: Metering = Metering.MATRIX,
+    /** Continuous AF, or focus only when tapped. */
+    val afContinuous: Boolean = true,
+    /** CONTROL_AE_ANTIBANDING_MODE: 0 off, 1 50 Hz, 2 60 Hz, 3 auto. */
+    val antibanding: Int = 3,
+    val ois: Boolean = true,
+    val aeLock: Boolean = false,
+    val awbLock: Boolean = false,
+    val torch: Boolean = false,
+    val tone: ToneMode = ToneMode.OURS,
+    /** ISP processing modes (Camera2 values); null = follow the "natural" switch / device default. */
+    val noiseReduction: Int? = null,
+    val edge: Int? = null,
+    val hotPixel: Int? = null,
+    val aberration: Int? = null,
+    val distortion: Int? = null,
 ) {
     val manualExposure get() = iso != null || shutterNs != null
 }

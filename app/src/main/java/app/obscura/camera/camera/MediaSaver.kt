@@ -62,10 +62,10 @@ object MediaSaver {
      * Saves a computed image (time modes, double exposure): look applied, JPEG at quality 95,
      * EXIF records what made it. The bitmap must already be upright.
      */
-    fun saveBitmap(context: Context, bitmap: Bitmap, look: Look, name: String, description: String, lookApplied: Boolean = false): Uri? {
+    fun saveBitmap(context: Context, bitmap: Bitmap, look: Look, name: String, description: String, lookApplied: Boolean = false, quality: Int = 96): Uri? {
         val src = bitmap
         if (!look.isNeutral && !lookApplied && bitmap.isMutable) applyLookInPlace(bitmap, look)
-        val bytes = ByteArrayOutputStream().use { bos -> src.compress(Bitmap.CompressFormat.JPEG, 96, bos); bos.toByteArray() }
+        val bytes = ByteArrayOutputStream().use { bos -> src.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), bos); bos.toByteArray() }
         val uri = insert(context, "$name.jpg", "image/jpeg") ?: return null
         context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
         runCatching {

@@ -35,8 +35,9 @@ import app.obscura.camera.ui.components.BusyChip
 import app.obscura.camera.ui.components.Ltr
 import app.obscura.camera.ui.components.ModeStrip
 import app.obscura.camera.ui.components.TimePanel
-import app.obscura.camera.ui.components.ZoomPanel
 import app.obscura.camera.ui.components.StudioPanel
+import app.obscura.camera.ui.components.GalleryPanel
+import app.obscura.camera.ui.components.ProPanel
 import app.obscura.camera.ui.components.formatZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import app.obscura.camera.ui.components.DialPanel
@@ -76,6 +77,12 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
             SensorPanel(s.report, s.hardware, s.activeLens?.cameraId, a)
         }
 
+        AnimatedVisibility(visible = s.gallery != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+            s.gallery?.let { GalleryPanel(it, a) }
+        }
+        AnimatedVisibility(visible = s.proOpen, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+            ProPanel(s, a)
+        }
         AnimatedVisibility(visible = s.studio != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
             s.studio?.let { StudioPanel(it, a) }
         }
@@ -141,7 +148,6 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
     val kind = when {
         s.activeControl != null -> "dial"
         s.looksOpen -> "looks"
-        s.zoomOpen -> "zoom"
         s.mode.time -> "time"
         else -> "info"
     }
@@ -160,7 +166,6 @@ private fun ContextPanel(s: CameraUiState, a: CameraActions) {
                 "dial" -> DialPanel(control!!, s, a)
                 "looks" -> LookStrip(s, a)
                 "time" -> TimePanel(s, a)
-                "zoom" -> ZoomPanel(s, lensRatios(s), a)
                 else -> InfoLine(s)
             }
         }

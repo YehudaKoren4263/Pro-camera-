@@ -72,6 +72,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (granted) vm.onPermission(true) else permission.launch(Manifest.permission.CAMERA)
 
+        // Opened as an editor from a gallery app ("Edit with Obscura"): go to the light studio.
+        if (savedInstanceState == null && intent?.action == Intent.ACTION_EDIT) intent.data?.let(vm::editExternal)
+
         setContent {
             val state by vm.state.collectAsStateWithLifecycle()
             LaunchedEffect(Unit) {
@@ -79,6 +82,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     when (e) {
                         is UiEvent.ViewImage -> runCatching {
                             startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(e.uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                        }
+                        is UiEvent.ShareImage -> runCatching {
+                            startActivity(Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).setType("image/jpeg").putExtra(Intent.EXTRA_STREAM, e.uri)
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "שיתוף תמונה"))
                         }
                         is UiEvent.ShareJson -> runCatching {
                             startActivity(Intent.createChooser(

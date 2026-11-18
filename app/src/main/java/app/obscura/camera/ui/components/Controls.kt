@@ -93,6 +93,9 @@ fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
         Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
             Ltr { Txt("OBSCURA", Ob.Wordmark) }
             Spacer(Modifier.weight(1f))
+            Txt("מקצועי", Ob.LabelHe.copy(color = Ob.Ivory),
+                Modifier.border(0.8.dp, Ob.Brass, RoundedCornerShape(50)).press(a::openPro).padding(horizontal = 12.dp, vertical = 5.dp))
+            Spacer(Modifier.width(10.dp))
             AccessBadge(s, Modifier.press(a::toggleSensor))
         }
         Row(Modifier.fillMaxWidth().height(30.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -334,7 +337,7 @@ fun formatDuration(ms: Long): String = when {
 }
 
 @Composable
-private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
     val border by animateColorAsState(if (selected) Ob.Brass else Ob.Hairline, tween(180), label = "chip")
     Txt(
         label, labelStyleFor(label).copy(color = if (selected) Ob.Ivory else Ob.Ash, fontSize = 12.sp),
@@ -529,24 +532,4 @@ fun zoomStops(lensRatios: List<Float>): List<Float> {
     val min = lensRatios.minOrNull() ?: 1f
     val base = listOf(1f, 1.2f, 1.5f, 1.8f, 2.5f, 3f, 3.5f, 4f, 5f, 6f, 7f, 8f, 10f)
     return (base + lensRatios.map { (it * 10).roundToInt() / 10f }).filter { it >= min - 0.01f && it <= 10f }.distinct().sorted()
-}
-
-@Composable
-fun ZoomPanel(s: CameraUiState, ratios: List<Float>, a: CameraActions) {
-    val stops = zoomStops(ratios)
-    val sel = stops.indices.minByOrNull { kotlin.math.abs(stops[it] - s.zoom) } ?: 0
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter), verticalAlignment = Alignment.CenterVertically) {
-            Txt("זום", Ob.LabelHe.copy(color = Ob.Ivory))
-            Spacer(Modifier.width(10.dp))
-            Txt(ltr(formatZoom(s.zoom)), Ob.Mono.copy(color = Ob.Brass))
-            Spacer(Modifier.width(10.dp))
-            val cropped = ratios.isNotEmpty() && ratios.none { kotlin.math.abs(it - s.zoom) <= 0.05f }
-            Txt(s.activeLens?.let { ltr("${(it.equivMm * s.zoom / (ratios.getOrNull(s.lenses.indexOf(it)) ?: 1f)).toInt()}mm") + if (cropped) " · חיתוך מהחיישן" else " · עדשה אמיתית" } ?: "",
-                Ob.LabelHe.copy(color = Ob.Smoke))
-            Spacer(Modifier.weight(1f))
-            Txt("סגירה", Ob.LabelHe, Modifier.press(a::toggleZoom).padding(6.dp))
-        }
-        Ltr { RulerDial(stops.map(::formatZoom), sel, true, onSelect = { a.setZoom(stops[it]) }) }
-    }
 }

@@ -49,6 +49,7 @@ class CameraController(private val context: Context, private val listener: Liste
         fun onShutter()
         fun onShotSaved(jpeg: Uri?, dng: Uri?, thumbnail: Bitmap?)
         fun onError(message: String)
+        fun onResultDump(rows: List<Pair<String, String>>) {}
     }
 
     data class SessionInfo(
@@ -90,6 +91,50 @@ class CameraController(private val context: Context, private val listener: Liste
     @Volatile var zoomRatio = 1f; private set
     private var rawBurst: RawBurst? = null
     /** Our neutral tone, sent to the ISP so preview and YUV modes carry no maker curve. */
+    private val linearCurve by lazy { floatArrayOf(0f, 0f, 1f, 1f).let { c -> android.hardware.camera2.params.TonemapCurve(c, c, c) } }
+
+    private class KelvinMatrices(val cm1: FloatArray, val cm2: FloatArray?, val fm1: FloatArray, val fm2: FloatArray?, val ill1: Int, val ill2: Int)
+
+    private fun kelvinMatrices(ch: CameraCharacteristics): KelvinMatrices {
+        fun mat(t: android.hardware.camera2.params.ColorSpaceTransform?): FloatArray? = t?.let { m ->
+            val e = IntArray(18); m.copyElements(e, 0); FloatArray(9) { e[it * 2].toFloat() / e[it * 2 + 1] }
+        }
+        val id = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        return KelvinMatrices(
+            mat(ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)) ?: id, mat(ch.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2)),
+            mat(ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1)) ?: id, mat(ch.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX2)),
+            ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1) ?: 21, ch.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt() ?: 17,
+        )
+    }
+
+    private fun centerRegion(ch: CameraCharacteristics, size: Float): MeteringRectangle? {
+        val a = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        val hw = (a.width() * size / 2).toInt(); val hh = (a.height() * size / 2).toInt()
+        val cx = a.centerX(); val cy = a.centerY()
+        return MeteringRectangle(Rect(cx - hw, cy - hh, cx + hw, cy + hh), MeteringRectangle.METERING_WEIGHT_MAX - 1)
+    }
+
+    /** When true, every capture result is reported (all keys, vendor ones included) ~2x a second. */
+    @Volatile var dumpResults = false
+    private var lastDumpAt = 0L
+
+    private fun dump(result: TotalCaptureResult): List<Pair<String, String>> {
+        fun fmt(v: Any?): String = when (v) {
+            null -> "—"
+            is IntArray -> v.contentToString(); is FloatArray -> v.joinToString(", ", "[", "]") { "%.4g".format(java.util.Locale.US, it) }
+            is LongArray -> v.contentToString(); is ByteArray -> v.contentToString(); is BooleanArray -> v.contentToString()
+            is DoubleArray -> v.contentToString()
+            is Array<*> -> v.joinToString(", ", "[", "]") { fmt(it) }
+            is Float -> "%.5g".format(java.util.Locale.US, v)
+            else -> v.toString()
+        }.let { if (it.length > 220) it.take(220) + "…" else it }
+        return result.keys.map { k ->
+            @Suppress("UNCHECKED_CAST")
+            val v = runCatching { result.get(k as CaptureResult.Key<Any>) }.getOrNull()
+            k.name to fmt(v)
+        }.sortedBy { it.first }
+    }
+
     private val neutralCurve by lazy { Tone.curve(64).let { c -> android.hardware.camera2.params.TonemapCurve(c, c, c) } }
 
     @Volatile var deviceOrientation: Int = 0
@@ -304,7 +349,38 @@ class CameraController(private val context: Context, private val listener: Liste
             b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, settings.evIndex)
         }
 
-        b.set(CaptureRequest.CONTROL_AWB_MODE, settings.wb.mode)
+        val kelvin = settings.kelvin
+        val awbModes = ch.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)?.toSet() ?: emptySet()
+        if (kelvin != null && CameraMetadata.CONTROL_AWB_MODE_OFF in awbModes) {
+            // Kelvin + tint from the sensor's calibration: gains and matrix set by hand.
+            val m = kelvinMatrices(ch)
+            val k = kelvin.toFloat()
+            val g = Colorimetry.gains(k, settings.tint.toFloat(), m.cm1, m.cm2, m.ill1, m.ill2)
+            val t = Colorimetry.transform(k, m.fm1, m.fm2, m.ill1, m.ill2)
+            b.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            b.set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            b.set(CaptureRequest.COLOR_CORRECTION_GAINS, android.hardware.camera2.params.RggbChannelVector(g[0], g[1], g[2], g[3]))
+            b.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, android.hardware.camera2.params.ColorSpaceTransform(
+                IntArray(18) { i -> if (i % 2 == 0) (t[i / 2] * 10000).toInt() else 10000 }))
+        } else {
+            b.set(CaptureRequest.CONTROL_AWB_MODE, settings.wb.mode)
+        }
+        if (settings.aeLock) b.set(CaptureRequest.CONTROL_AE_LOCK, true)
+        if (settings.awbLock) b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
+        fun avail(key: CameraCharacteristics.Key<IntArray>) = ch.get(key)?.toSet() ?: emptySet()
+        if (settings.antibanding in avail(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES))
+            b.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, settings.antibanding)
+        val oisModes = avail(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+        val ois = if (settings.ois) CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+        if (ois in oisModes) b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, ois)
+        if (settings.torch && ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true)
+            b.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
+        settings.hotPixel?.takeIf { it in avail(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES) }
+            ?.let { b.set(CaptureRequest.HOT_PIXEL_MODE, it) }
+        settings.aberration?.takeIf { it in avail(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES) }
+            ?.let { b.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, it) }
+        settings.distortion?.takeIf { it in avail(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES) }
+            ?.let { b.set(CaptureRequest.DISTORTION_CORRECTION_MODE, it) }
 
         val afModes = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet() ?: emptySet()
         val minFocus = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
@@ -318,10 +394,18 @@ class CameraController(private val context: Context, private val listener: Liste
                 b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
                 b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(tapRegion))
             }
+            !settings.afContinuous && CameraMetadata.CONTROL_AF_MODE_AUTO in afModes ->
+                b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
             CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE in afModes ->
                 b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         }
-        tapRegion?.let { r ->
+        val aeRegion = tapRegion ?: when (settings.metering) {
+            Metering.MATRIX -> null
+            // Centre-weighted: the middle 40 %; spot: the middle 6 %.
+            Metering.CENTER -> centerRegion(ch, 0.4f)
+            Metering.SPOT -> centerRegion(ch, 0.06f)
+        }
+        aeRegion?.let { r ->
             if ((ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) b.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(r))
         }
 
@@ -335,9 +419,9 @@ class CameraController(private val context: Context, private val listener: Liste
 
         // No maker tone curve: the ISP gets our neutral curve wherever it accepts one.
         val tonemaps = ch.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)?.toSet() ?: emptySet()
-        if (CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE in tonemaps) {
+        if (CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE in tonemaps && settings.tone != ToneMode.DEVICE) {
             b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
-            b.set(CaptureRequest.TONEMAP_CURVE, neutralCurve)
+            b.set(CaptureRequest.TONEMAP_CURVE, if (settings.tone == ToneMode.LINEAR) linearCurve else neutralCurve)
         }
 
         if (natural) {
@@ -350,6 +434,11 @@ class CameraController(private val context: Context, private val listener: Liste
                 CameraMetadata.NOISE_REDUCTION_MODE_FAST in nr -> b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_FAST)
             }
         }
+        // Explicit choices in the pro panel win over the "natural" switch.
+        settings.noiseReduction?.takeIf { it in avail(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) }
+            ?.let { b.set(CaptureRequest.NOISE_REDUCTION_MODE, it) }
+        settings.edge?.takeIf { it in avail(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) }
+            ?.let { b.set(CaptureRequest.EDGE_MODE, it) }
     }
 
     private val readoutCallback = object : CameraCaptureSession.CaptureCallback() {
@@ -360,6 +449,7 @@ class CameraController(private val context: Context, private val listener: Liste
             val now = SystemClock.elapsedRealtime()
             if (now - lastReadoutAt < 120) return
             lastReadoutAt = now
+            if (dumpResults && now - lastDumpAt > 500) { lastDumpAt = now; listener.onResultDump(dump(result)) }
             val af = result.get(CaptureResult.CONTROL_AF_STATE)
             listener.onReadout(
                 LiveReadout(

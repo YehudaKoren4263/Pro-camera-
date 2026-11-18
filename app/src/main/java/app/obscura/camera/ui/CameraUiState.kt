@@ -15,7 +15,7 @@ import app.obscura.camera.camera.ProbeReport
 import app.obscura.camera.time.Blend
 
 /** Technical abbreviations stay in Latin; words are Hebrew. */
-enum class Control(val label: String) { SHUTTER("תריס"), ISO("ISO"), EV("EV"), WB("WB"), FOCUS("מיקוד") }
+enum class Control(val label: String) { ZOOM("זום"), SHUTTER("תריס"), ISO("ISO"), EV("EV"), WB("WB"), FOCUS("מיקוד") }
 
 /** Open-ended exposure, ended by a second tap on the shutter. */
 const val BULB = -1L
@@ -96,7 +96,14 @@ data class CameraUiState(
     val elapsedMs: Long? = null,
     /** Total zoom relative to the main lens (0.6x .. 10x), and whether the zoom wheel is open. */
     val zoom: Float = 1f,
-    val zoomOpen: Boolean = false,
+    /** Professional panel: every Camera2 control, plus the live capture result. */
+    val proOpen: Boolean = false,
+    val resultDump: List<Pair<String, String>> = emptyList(),
+    /** RAW frames merged per photo (with 50 MP on). */
+    val burstFrames: Int = 8,
+    val jpegQuality: Int = 96,
+    /** In-app gallery of this app's photos; null when closed. */
+    val gallery: Gallery? = null,
     /** Light studio over the last photo; null when closed. */
     val studio: Studio? = null,
 ) {
@@ -131,6 +138,16 @@ interface CameraActions {
     fun resetDouble() {}
     fun toggleComet() {}
     fun toggleZoom() {}
+    fun openPro() {}
+    fun closePro() {}
+    fun proSettings(settings: app.obscura.camera.camera.ManualSettings) {}
+    fun resetPro() {}
+    fun setBurstFrames(n: Int) {}
+    fun setJpegQuality(q: Int) {}
+    fun closeGallery() {}
+    fun galleryIndex(i: Int) {}
+    fun galleryLight() {}
+    fun galleryShare() {}
     fun setZoom(zoom: Float) {}
     fun pinchZoom(factor: Float) {}
     fun openStudio() {}
@@ -140,6 +157,15 @@ interface CameraActions {
     fun studioSave() {}
     fun openInGallery() {}
 }
+
+/** The gallery: this app's photos, newest first, and the one being viewed. */
+data class Gallery(
+    val items: List<android.net.Uri> = emptyList(),
+    val index: Int = 0,
+    val image: ImageBitmap? = null,
+    val info: String? = null,
+    val loading: Boolean = true,
+)
 
 /** The light studio: a preview of the last photo with light added, and the light's settings. */
 data class Studio(

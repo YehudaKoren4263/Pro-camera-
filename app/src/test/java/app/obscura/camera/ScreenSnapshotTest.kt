@@ -164,7 +164,7 @@ class ScreenSnapshotTest {
         shot(base.copy(mode = Mode.DOUBLE, jpegMp = 4.9f, rawActive = false, doubleGhost = bmp.asImageBitmap(), blend = Blend.SCREEN))
     }
 
-    @Test fun zoomWheel() = shot(base.copy(zoom = 3.5f, zoomOpen = true))
+    @Test fun zoomWheel() = shot(base.copy(zoom = 3.5f, activeControl = Control.ZOOM))
 
     @Test fun bulbRecording() = shot(
         base.copy(mode = Mode.LONG, durations = mapOf(Mode.LONG to app.obscura.camera.ui.BULB), jpegMp = 12.6f, rawActive = false, capturing = true,
@@ -184,5 +184,25 @@ class ScreenSnapshotTest {
         for (y in 0 until h) { System.arraycopy(px, y * w, row, 0, w); map.applyRow(row, y, w, h); System.arraycopy(row, 0, px, y * w, w) }
         val bmp = android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
         shot(base.copy(studio = app.obscura.camera.ui.Studio(preview = bmp.asImageBitmap(), params = p)))
+    }
+
+    @Test fun proPanel() = shot(base.copy(
+        proOpen = true,
+        settings = ManualSettings(kelvin = 5200, tint = 2, metering = app.obscura.camera.camera.Metering.SPOT, edge = 0),
+        resultDump = listOf(
+            "android.sensor.exposureTime" to "4000000", "android.sensor.sensitivity" to "160",
+            "android.colorCorrection.gains" to "RggbChannelVector{R:1.9821, G_even:1.0000, G_odd:1.0000, B:1.6043}",
+            "android.lens.focusDistance" to "0.35000", "android.control.aeState" to "2",
+            "com.xiaomi.ai.asd.sceneDetected" to "[3]", "com.mediatek.control.capture.hintForIspTuning" to "[0]",
+        ),
+    ))
+
+    @Test fun gallery() {
+        val w = 300; val h = 400
+        val px = IntArray(w * h) { i -> val x = i % w; val y = i / w
+            when { y < 220 -> 0xFF8FA6BC.toInt(); (x / 30) % 2 == 0 -> 0xFF2D3A2A.toInt(); else -> 0xFF3B4A36.toInt() } }
+        val bmp = android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val uris = List(41) { android.net.Uri.parse("content://media/external/images/media/$it") }
+        shot(base.copy(gallery = app.obscura.camera.ui.Gallery(uris, 2, bmp.asImageBitmap(), "8160×6144 · 50.1 MP · 21.4 MB", false)))
     }
 }
