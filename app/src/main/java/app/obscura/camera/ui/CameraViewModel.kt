@@ -26,6 +26,8 @@ import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
 import app.obscura.camera.time.YuvFrame
 import app.obscura.camera.camera.RawDevelop
+import app.obscura.camera.time.FrameOps
+import app.obscura.camera.coach.CompositionCoach
 import app.obscura.camera.time.YuvImages
 import app.obscura.camera.time.AutoStop
 import app.obscura.camera.time.SuperResolution
@@ -94,7 +96,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         }
         val first = report.lenses.firstOrNull { it.label == "1×" } ?: report.lenses.firstOrNull()
         _state.update {
-            it.copy(report = report, lenses = report.lenses, activeLensKey = first?.key, activeInfo = infoFor(report, first))
+            val front = report.cameras.firstOrNull { c -> c.facing == android.hardware.camera2.CameraMetadata.LENS_FACING_FRONT && c.listed && !c.physicalOnly }
+                ?.let { c -> app.obscura.camera.camera.Lens(c.id, null, c.equivMm ?: 24, false, c.hasRaw, "סלפי") }
+            it.copy(report = report, lenses = report.lenses, activeLensKey = first?.key, activeInfo = infoFor(report, first), frontLens = front)
         }
         if (first == null) notify("לא נמצאה מצלמה אחורית זמינה")
         launch(Dispatchers.Main) { open() }
@@ -127,7 +131,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun selectLens(key: String) {
         val s0 = _state.value
         if (s0.capturing) return
-        if (key == s0.activeLensKey) { toggleZoom(); return }
+        if (s0.selfie) { _state.update { it.copy(selfie = false) } }
+        else if (key == s0.activeLensKey) { toggleZoom(); return }
         s0.lenses.firstOrNull { it.key == key }?.let { l -> _state.update { it.copy(zoom = ratio(l, it)) } }
         controller.setZoom(1f)
         switchLens(key)
@@ -146,7 +151,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
      */
     override fun setZoom(zoom: Float) {
         val s = _state.value
-        if (s.capturing || s.lenses.isEmpty()) return
+        if (s.capturing) return
+        if (s.selfie) {
+            // One front lens: zoom is a centred crop.
+            val z = zoom.coerceIn(1f, 4f)
+            _state.update { it.copy(zoom = z) }; controller.setZoom(z); return
+        }
+        if (s.lenses.isEmpty()) return
         val sorted = s.lenses.sortedBy { ratio(it, s) }
         val z = zoom.coerceIn(ratio(sorted.first(), s), 10f)
         val best = sorted.lastOrNull { ratio(it, s) <= z + 0.02f } ?: sorted.first()
@@ -167,8 +178,53 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 focusPoint = null, live = LiveReadout(),
             )
         }
-        clearDouble()
+        // A double exposure may mix lenses: the first frame stays.
+        if (doubleFirst != null) notify("הפריים הראשון נשמר. צלם את השני בכל עדשה")
         open()
+    }
+
+    override fun toggleSelfie() {
+        val s = _state.value
+        if (s.capturing) return
+        val front = s.frontLens ?: run { notify("לא נמצאה מצלמה קדמית"); return }
+        val selfie = !s.selfie
+        _state.update {
+            val lens = if (selfie) front else it.lenses.firstOrNull { l -> l.key == it.activeLensKey }
+            it.copy(selfie = selfie, zoom = if (selfie) 1f else lens?.let { l -> ratio(l, it) } ?: 1f,
+                activeInfo = infoFor(it.report, lens), settings = it.settings.copy(iso = null, shutterNs = null, focusDiopters = null),
+                focusPoint = null, live = LiveReadout(), activeControl = null)
+        }
+        controller.setZoom(1f)
+        coach.reset()
+        open()
+        notify(if (selfie) "סלפי" + if (doubleFirst != null) " · הפריים הראשון של החשיפה הכפולה נשמר" else "" else "מצלמה אחורית")
+    }
+
+    override fun toggleCoach() {
+        _state.update { it.copy(coachOn = !it.coachOn, coachTip = null) }
+        coach.reset()
+        notify(if (_state.value.coachOn) "הצעות קומפוזיציה פועלות" else "הצעות קומפוזיציה כבויות")
+    }
+
+    override fun setZoomBurst(on: Boolean) = _state.update { it.copy(zoomBurst = on) }
+    override fun setBurstStrength(s: Float) = _state.update { it.copy(burstStrength = s) }
+
+    // ---- Composition coach ---------------------------------------------------------------------
+
+    private val coach = CompositionCoach()
+
+    /** Called with the small upright preview (about 96 x 128), ~5 times a second. */
+    fun onPreviewPixels(px: IntArray, w: Int, h: Int) {
+        val s = _state.value
+        val busy = s.capturing || s.gallery != null || s.studio != null || s.proOpen || s.sensorOpen || s.looksOpen || s.activeControl != null
+        if (!s.coachOn || busy) {
+            if (s.coachTip != null) _state.update { it.copy(coachTip = null) }
+            return
+        }
+        val luma = FloatArray(w * h) { i -> val c = px[i]; (0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)) / 255f }
+        val faces = s.live.faces.map { CompositionCoach.Face(it[0], it[1], it[2], it[3]) }
+        val tip = coach.update(CompositionCoach.Scene(luma, w, h, faces, s.rollDegrees, s.zoom, s.selfie), System.currentTimeMillis())
+        if (tip != s.coachTip) _state.update { it.copy(coachTip = tip) }
     }
 
     override fun selectMode(mode: Mode) {
@@ -603,13 +659,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 return@record
             }
             _state.update { it.copy(progress = null, busyText = "מעבד ${session.frames} פריימים") }
+            val burst = mode == TimeMode.PANNING && s.zoomBurst
             val label = when (mode) {
-                TimeMode.PANNING -> "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; TimeMode.COMET -> "שובל שביט"
+                TimeMode.PANNING -> if (burst) "מריחת זום" else "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; TimeMode.COMET -> "שובל שביט"
                 TimeMode.NIGHT -> "לילה"; TimeMode.CLEAN_PLATE -> "הסרת אנשים"; else -> "חשיפה ארוכה"
             }
             val description = "Obscura $label · ${session.frames} frames · ${stats.dropped} dropped · ${tookMs} ms · max shift ${session.maxShift}px"
             val look = _state.value.look
-            saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation, look) }
+            saveComputed(label, description) {
+                var out = session.result()
+                if (burst) {
+                    // Zoom burst: streaks radiate from the tapped subject, which stays sharp.
+                    val c = toSensor(s.focusPoint ?: Offset(0.5f, 0.5f), orientation)
+                    out = FrameOps.zoomBurst(out, c.x, c.y, s.burstStrength)
+                }
+                YuvImages.toBitmap(out, stats.orientation, look)
+            }
             if (autoStopped) notify("האלגוריתם עצר אחרי ${"%.1f".format(tookMs / 1000f)} ש׳: התמונה התייצבה")
             else if (stats.dropped > session.frames) notify("$label · ${session.frames} פריימים (${stats.dropped} נזרקו כדי לשמור על קצב)")
         }
@@ -627,9 +692,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 return@grab
             }
             if (first == null) {
-                doubleFirst = frame
+                // Stored upright, so the second frame can come from any lens, even the selfie camera.
+                val upright = FrameOps.rotate(frame, stats.orientation)
+                doubleFirst = upright
                 // The ghost is sampled straight from the frame at 1/4 size: no full-size bitmap.
-                val ghost = runCatching { YuvImages.toBitmap(frame, stats.orientation, step = 4) }.getOrNull()
+                val ghost = runCatching { YuvImages.toBitmap(upright, 0, step = 4) }.getOrNull()
                 _state.update { it.copy(capturing = false, busyText = null, doubleGhost = ghost?.asImageBitmap()) }
                 notify("עכשיו כוון את הפריים השני מעל הראשון")
             } else {
@@ -638,7 +705,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 _state.update { it.copy(doubleGhost = null) }
                 val look = _state.value.look
                 saveComputed("חשיפה כפולה", "Obscura double exposure · ${blend.name.lowercase()}") {
-                    YuvImages.blendToBitmap(first, frame, blend, stats.orientation, look)
+                    val second = FrameOps.resizeCover(FrameOps.rotate(frame, stats.orientation), first.w, first.h)
+                    YuvImages.blendToBitmap(first, second, blend, 0, look)
                 }
             }
         }

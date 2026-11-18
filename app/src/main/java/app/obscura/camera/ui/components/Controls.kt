@@ -12,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -116,6 +117,8 @@ fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
                 Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", s.jpegMp)), Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
             }
             Spacer(Modifier.weight(1f))
+            Toggle("הצעות", s.coachOn, onClick = a::toggleCoach)
+            Spacer(Modifier.width(14.dp))
             Toggle("טבעי", s.natural, onClick = a::toggleNatural)
             Spacer(Modifier.width(14.dp))
             Toggle("רשת", s.grid, onClick = a::toggleGrid)
@@ -297,7 +300,8 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Txt(
                         when (s.mode) {
-                            Mode.PANNING -> "הקש על הנושא. הוא יישאר חד, הרקע יימרח."
+                            Mode.PANNING -> if (s.zoomBurst) "הקש על הנושא: הוא נשאר חד, והכול נמרח ממנו החוצה כמו סיבוב טבעת זום."
+                                else "הקש על הנושא. הוא יישאר חד, הרקע יימרח."
                             Mode.TRAILS -> "כל אור שזז משאיר שובל. מומלץ בלילה."
                             Mode.NIGHT -> "פריימים מתמזגים: פחות רעש, ומה שזז לא משאיר רוח רפאים."
                             Mode.CLEAN -> "תשעה פריימים לאורך הזמן. מי שעובר בתמונה ייעלם."
@@ -307,7 +311,15 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                     )
                     if (s.mode == Mode.LONG && s.duration > 0) ndMeter(s)?.let { Txt(it, Ob.LabelHe.copy(color = Ob.Brass)) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (s.mode == Mode.PANNING) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Chip("פאנינג", !s.zoomBurst) { a.setZoomBurst(false) }
+                    Chip("מריחת זום", s.zoomBurst) { a.setZoomBurst(true) }
+                    if (s.zoomBurst) {
+                        Spacer(Modifier.width(4.dp))
+                        listOf("עדינה" to 0.08f, "בינונית" to 0.15f, "חזקה" to 0.26f).forEach { (l, v) -> Chip(l, s.burstStrength == v) { a.setBurstStrength(v) } }
+                    }
+                }
+                Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     s.mode.durations.forEach { ms -> Chip(formatDuration(ms).let { if (ms > 0) ltr(it) else it }, s.duration == ms) { a.selectDuration(ms) } }
                     if (s.mode == Mode.TRAILS) Chip("שובל שביט", s.comet) { a.toggleComet() }
                 }

@@ -57,4 +57,6 @@ data class LiveReadout(
     val aperture: Float? = null,
     val focalMm: Float? = null,
     val afLocked: Boolean = false,
+    /** Faces the camera found, upright viewfinder coordinates 0..1: [left, top, right, bottom]. */
+    val faces: List<FloatArray> = emptyList(),
 )

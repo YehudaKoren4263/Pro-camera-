@@ -30,6 +30,8 @@ fun CameraPreview(
     onTextureGone: () -> Unit,
     onHistogram: (Histogram) -> Unit,
     modifier: Modifier = Modifier,
+    /** Small upright preview pixels for the composition coach; null = not needed. */
+    onPixels: ((IntArray, Int, Int) -> Unit)? = null,
 ) {
     var view by remember { mutableStateOf<TextureView?>(null) }
     val texture by rememberUpdatedState(onTexture)
@@ -65,17 +67,20 @@ fun CameraPreview(
         },
     )
 
-    LaunchedEffect(view, histogramOn) {
+    val pixels by rememberUpdatedState(onPixels)
+    LaunchedEffect(view, histogramOn, onPixels != null) {
         val tv = view ?: return@LaunchedEffect
-        if (!histogramOn) return@LaunchedEffect
+        if (!histogramOn && pixels == null) return@LaunchedEffect
         while (isActive) {
             delay(180)
             if (!tv.isAvailable) continue
             val bmp = tv.getBitmap(96, 128) ?: continue
             val px = IntArray(bmp.width * bmp.height)
             bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            val bw = bmp.width; val bh = bmp.height
             bmp.recycle()
-            onHistogram(withContext(Dispatchers.Default) { HistogramMath.compute(px) })
+            pixels?.let { cb -> withContext(Dispatchers.Default) { cb(px, bw, bh) } }
+            if (histogramOn) onHistogram(withContext(Dispatchers.Default) { HistogramMath.compute(px) })
         }
     }
 }

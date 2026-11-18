@@ -135,6 +135,35 @@ class CameraController(private val context: Context, private val listener: Liste
         }.sortedBy { it.first }
     }
 
+    /** Face rectangles from sensor space to the upright, possibly mirrored, viewfinder. */
+    private fun faces(result: CaptureResult): List<FloatArray> {
+        val ch = characteristics ?: return emptyList()
+        val list = result.get(CaptureResult.STATISTICS_FACES) ?: return emptyList()
+        if (list.isEmpty()) return emptyList()
+        val a = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return emptyList()
+        // The visible part of the sensor (digital zoom crops the centre).
+        val vw = a.width() / zoomRatio; val vh = a.height() / zoomRatio
+        val vl = a.left + (a.width() - vw) / 2; val vt = a.top + (a.height() - vh) / 2
+        val orientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val front = ch.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
+        return list.filter { it.score >= 30 }.map { f ->
+            val r = f.bounds
+            fun map(sx: Float, sy: Float): Pair<Float, Float> {
+                val nx = (sx - vl) / vw; val ny = (sy - vt) / vh
+                var (px, py) = when (orientation) {
+                    90 -> (1f - ny) to nx
+                    270 -> ny to (1f - nx)
+                    180 -> (1f - nx) to (1f - ny)
+                    else -> nx to ny
+                }
+                if (front) px = 1f - px // the selfie preview is a mirror
+                return px to py
+            }
+            val (x0, y0) = map(r.left.toFloat(), r.top.toFloat()); val (x1, y1) = map(r.right.toFloat(), r.bottom.toFloat())
+            floatArrayOf(minOf(x0, x1).coerceIn(0f, 1f), minOf(y0, y1).coerceIn(0f, 1f), maxOf(x0, x1).coerceIn(0f, 1f), maxOf(y0, y1).coerceIn(0f, 1f))
+        }
+    }
+
     private val neutralCurve by lazy { Tone.curve(64).let { c -> android.hardware.camera2.params.TonemapCurve(c, c, c) } }
 
     @Volatile var deviceOrientation: Int = 0
@@ -365,6 +394,10 @@ class CameraController(private val context: Context, private val listener: Liste
         } else {
             b.set(CaptureRequest.CONTROL_AWB_MODE, settings.wb.mode)
         }
+        // Face detection feeds the composition coach (cheap: the ISP does it anyway).
+        val faceModes = ch.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)?.toSet() ?: emptySet()
+        if (CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE in faceModes)
+            b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE)
         if (settings.aeLock) b.set(CaptureRequest.CONTROL_AE_LOCK, true)
         if (settings.awbLock) b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
         fun avail(key: CameraCharacteristics.Key<IntArray>) = ch.get(key)?.toSet() ?: emptySet()
@@ -458,6 +491,7 @@ class CameraController(private val context: Context, private val listener: Liste
                     aperture = result.get(CaptureResult.LENS_APERTURE),
                     focalMm = result.get(CaptureResult.LENS_FOCAL_LENGTH),
                     afLocked = af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED,
+                    faces = faces(result),
                 )
             )
         }

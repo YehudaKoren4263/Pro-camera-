@@ -27,7 +27,7 @@ enum class Mode(val title: String, val time: Boolean, val durations: List<Long>,
     PHOTO("צילום", false, emptyList(), 0),
     NIGHT("לילה", true, listOf(1000, 2000, 3000, AUTO), AUTO),
     LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000, BULB, AUTO), 2000),
-    PANNING("פאנינג", true, listOf(250, 500, 1000), 500),
+    PANNING("פאנינג", true, listOf(250, 500, 1000, 2000, BULB, AUTO), 500),
     TRAILS("עקבות אור", true, listOf(2000, 4000, 8000, 15000, BULB, AUTO), AUTO),
     CLEAN("הסרת אנשים", true, listOf(3000, 6000, 10000), 6000),
     DOUBLE("חשיפה כפולה", true, emptyList(), 0),
@@ -96,6 +96,15 @@ data class CameraUiState(
     val elapsedMs: Long? = null,
     /** Total zoom relative to the main lens (0.6x .. 10x), and whether the zoom wheel is open. */
     val zoom: Float = 1f,
+    /** Front camera, and whether it is the one in use. */
+    val frontLens: app.obscura.camera.camera.Lens? = null,
+    val selfie: Boolean = false,
+    /** Panning style: classic panning, or a zoom burst radiating from the subject. */
+    val zoomBurst: Boolean = false,
+    val burstStrength: Float = 0.15f,
+    /** Live composition coach. */
+    val coachOn: Boolean = true,
+    val coachTip: app.obscura.camera.coach.CompositionCoach.Tip? = null,
     /** Professional panel: every Camera2 control, plus the live capture result. */
     val proOpen: Boolean = false,
     val resultDump: List<Pair<String, String>> = emptyList(),
@@ -108,7 +117,7 @@ data class CameraUiState(
     val studio: Studio? = null,
 ) {
     val duration get() = durations[mode] ?: mode.defaultDuration
-    val activeLens get() = lenses.firstOrNull { it.key == activeLensKey }
+    val activeLens get() = if (selfie) frontLens else lenses.firstOrNull { it.key == activeLensKey }
 }
 
 /** Every user intent, so the screen stays a pure function of state (and snapshot-testable). */
@@ -139,6 +148,10 @@ interface CameraActions {
     fun toggleComet() {}
     fun toggleZoom() {}
     fun openPro() {}
+    fun toggleSelfie() {}
+    fun toggleCoach() {}
+    fun setZoomBurst(on: Boolean) {}
+    fun setBurstStrength(s: Float) {}
     fun closePro() {}
     fun proSettings(settings: app.obscura.camera.camera.ManualSettings) {}
     fun resetPro() {}

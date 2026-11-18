@@ -38,6 +38,9 @@ import app.obscura.camera.ui.components.TimePanel
 import app.obscura.camera.ui.components.StudioPanel
 import app.obscura.camera.ui.components.GalleryPanel
 import app.obscura.camera.ui.components.ProPanel
+import app.obscura.camera.ui.components.CoachToast
+import app.obscura.camera.ui.components.CoachTarget
+import app.obscura.camera.ui.components.FlipButton
 import app.obscura.camera.ui.components.formatZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import app.obscura.camera.ui.components.DialPanel
@@ -133,10 +136,14 @@ private fun Viewfinder(s: CameraUiState, a: CameraActions, preview: @Composable 
             HistogramPlate(s.histogram, Modifier.align(Alignment.TopEnd).padding(10.dp))
         }
         ModeTag(s, Modifier.align(Alignment.TopStart).padding(10.dp))
+        // Composition coach: a quiet tip and, when it has one, where to put the subject.
+        if (!s.capturing) CoachTarget(s.coachTip)
+        CoachToast(s.coachTip.takeIf { s.busyText == null }, Modifier.align(Alignment.BottomCenter).padding(bottom = 64.dp, start = 24.dp, end = 24.dp))
         s.busyText?.let { BusyChip(it, s.progress, s.duration, Modifier.align(Alignment.TopCenter).padding(top = 58.dp), s.elapsedMs) }
 
-        val activeRatio = s.activeLens?.let { l -> lensRatios(s).let { r -> r[s.lenses.indexOf(l)] } }
-        LensSelector(s.lenses, s.activeLensKey, a::selectLens, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+        val activeRatio = s.activeLens?.let { l -> lensRatios(s).getOrNull(s.lenses.indexOf(l)) }
+        if (s.frontLens != null && !s.capturing) FlipButton(s.selfie, a::toggleSelfie, Modifier.align(Alignment.BottomEnd).padding(10.dp))
+        if (!s.selfie) LensSelector(s.lenses, s.activeLensKey, a::selectLens, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
             activeLabel = if (activeRatio != null && kotlin.math.abs(s.zoom - activeRatio) > 0.05f) formatZoom(s.zoom) else null)
         ShutterFlash(s.shutterTick)
     }

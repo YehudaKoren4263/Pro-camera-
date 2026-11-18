@@ -31,7 +31,8 @@ object Dials {
 
     private val manualSensor get() = { s: CameraUiState -> s.activeInfo?.manualSensor ?: true }
 
-    fun zoomStops(s: CameraUiState) = app.obscura.camera.ui.components.zoomStops(lensRatios(s))
+    fun zoomStops(s: CameraUiState) =
+        if (s.selfie) listOf(1f, 1.2f, 1.5f, 2f, 2.5f, 3f, 4f) else app.obscura.camera.ui.components.zoomStops(lensRatios(s))
 
     fun model(c: Control, s: CameraUiState): DialModel = when (c) {
         Control.ZOOM -> {
@@ -86,7 +87,8 @@ object Dials {
     }
 
     fun readout(c: Control, s: CameraUiState): Readout = when (c) {
-        Control.ZOOM -> Readout(app.obscura.camera.ui.components.formatZoom(s.zoom), lensRatios(s).any { kotlin.math.abs(it - s.zoom) < 0.05f })
+        Control.ZOOM -> Readout(app.obscura.camera.ui.components.formatZoom(s.zoom),
+            if (s.selfie) s.zoom < 1.05f else lensRatios(s).any { kotlin.math.abs(it - s.zoom) < 0.05f })
         Control.SHUTTER -> Readout((s.settings.shutterNs ?: s.live.shutterNs)?.let(ExposureMath::formatShutter) ?: "—", s.settings.shutterNs == null)
         Control.ISO -> Readout((s.settings.iso ?: s.live.iso)?.toString() ?: "—", s.settings.iso == null)
         Control.EV -> Readout(ExposureMath.formatEv(s.settings.evIndex * evStep(s)), s.settings.evIndex == 0)

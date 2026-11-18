@@ -205,4 +205,17 @@ class ScreenSnapshotTest {
         val uris = List(41) { android.net.Uri.parse("content://media/external/images/media/$it") }
         shot(base.copy(gallery = app.obscura.camera.ui.Gallery(uris, 2, bmp.asImageBitmap(), "8160×6144 · 50.1 MP · 21.4 MB", false)))
     }
+
+    private val front = Lens("1", null, 21, false, true, "סלפי")
+
+    @Test fun coachTip() = shot(base.copy(frontLens = front,
+        coachTip = app.obscura.camera.coach.CompositionCoach.Tip("horizon", "האופק חוצה באמצע. השמיים מעניינים: הורד את האופק לשליש התחתון", 0.5f, 2f / 3f)))
+
+    @Test fun coachPraise() = shot(base.copy(frontLens = front, coachTip = app.obscura.camera.coach.CompositionCoach.Tip("ok", "יפה. ככה ✓", praise = true)))
+
+    @Test fun selfie() = shot(base.copy(frontLens = front, selfie = true, activeInfo = cameras[1],
+        coachTip = app.obscura.camera.coach.CompositionCoach.Tip("selfie", "הרם את הטלפון מעט מעל גובה העיניים. זווית מחמיאה יותר", 0.5f, 1f / 3f)))
+
+    @Test fun zoomBurstPanning() = shot(base.copy(frontLens = front, mode = Mode.PANNING, zoomBurst = true, rawActive = false, jpegMp = 12.6f,
+        focusPoint = androidx.compose.ui.geometry.Offset(0.5f, 0.55f)))
 }
