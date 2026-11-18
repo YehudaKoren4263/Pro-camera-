@@ -122,9 +122,10 @@ class CameraController(private val context: Context, private val listener: Liste
         val jpegSize = map.getOutputSizes(ImageFormat.JPEG).filter { isFourThree(it) }.maxByOrNull { it.area }
             ?: map.getOutputSizes(ImageFormat.JPEG).maxBy { it.area }
         val rawSize = if (raw) map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.area } else null
-        // Time modes stream YUV: about 5 MP keeps alignment and stacking near real time.
+        // Time modes stream YUV at the largest 4:3 size the lens offers (12.6 MP on the 15T):
+        // quality first. The engine keeps memory flat and drops frames rather than pixels.
         val yuvSize = if (timeSession) {
-            val all = map.getOutputSizes(ImageFormat.YUV_420_888).filter { it.width <= 2560 && it.height <= 1920 }
+            val all = map.getOutputSizes(ImageFormat.YUV_420_888).toList()
             all.filter { isFourThree(it) }.maxByOrNull { it.area } ?: all.maxByOrNull { it.area }
         } else null
         val preview = map.getOutputSizes(SurfaceTexture::class.java)

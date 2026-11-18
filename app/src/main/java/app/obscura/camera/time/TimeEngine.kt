@@ -146,67 +146,69 @@ object Align {
 enum class Combine { MEAN, LIGHTEN }
 
 /**
- * Streaming accumulator. add() takes a frame and its offset (dx, dy): output(x, y) samples
- * frame(x + dx, y + dy). result() crops to the area every frame covered, so shifted edges
- * never show.
+ * Streaming accumulator at full resolution. add() takes a frame and its offset (dx, dy):
+ * output(x, y) samples frame(x + dx, y + dy). result() crops to the area every frame covered,
+ * so inside the crop every pixel received every frame and no per-pixel counts are needed.
+ *
+ * Memory: 16-bit sums (255 × 256 frames fits in 65535), about 3.3 bytes per pixel in total.
+ * For a 12.6 MP stream that is ~42 MB instead of ~156 MB with int sums and counts.
  */
 class Stacker(val w: Int, val h: Int, private val combine: Combine) {
+    companion object {
+        /** Mean sums are 16-bit: 255 × 256 = 65280. Frames past this are ignored, not overflowed. */
+        const val MAX_MEAN_FRAMES = 256
+
+        /** 4x4 Bayer matrix, used to dither the fractional part of the mean into 8 bits. */
+        private val BAYER = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
+    }
+
     private val cw = w / 2; private val ch = h / 2
-    private val sy = IntArray(w * h)
-    private val su = IntArray(cw * ch)
-    private val sv = IntArray(cw * ch)
-    private val n = IntArray(w * h)
-    private val nc = IntArray(cw * ch)
-    private val blockLuma = IntArray(cw * ch) { -1 }
+    private val sy = CharArray(w * h)
+    private val su = CharArray(cw * ch)
+    private val sv = CharArray(cw * ch)
+    /** LIGHTEN only: the brightest 2x2 luma sum seen per chroma site (chroma follows it). */
+    private val blockLuma: ShortArray? = if (combine == Combine.LIGHTEN) ShortArray(cw * ch) { -1 } else null
     var frames = 0; private set
     private var minDx = 0; private var maxDx = 0; private var minDy = 0; private var maxDy = 0
 
     fun add(f: YuvFrame, dx: Int = 0, dy: Int = 0) {
         require(f.w == w && f.h == h)
-        val ddx = dx; val ddy = dy
-        val cdx = Math.floorDiv(dx, 2); val cdy = Math.floorDiv(dy, 2)
-        minDx = min(minDx, ddx); maxDx = max(maxDx, ddx); minDy = min(minDy, ddy); maxDy = max(maxDy, ddy)
-        when (combine) {
-            Combine.MEAN -> {
-                for (y in 0 until h) {
-                    val fy = y + ddy; if (fy !in 0 until h) continue
-                    val ro = y * w; val rf = fy * w
-                    for (x in 0 until w) {
-                        val fx = x + ddx; if (fx !in 0 until w) continue
-                        sy[ro + x] += f.y[rf + fx].toInt() and 0xFF; n[ro + x]++
-                    }
-                }
-                for (y in 0 until ch) {
-                    val fy = y + cdy; if (fy !in 0 until ch) continue
-                    for (x in 0 until cw) {
-                        val fx = x + cdx; if (fx !in 0 until cw) continue
-                        val o = y * cw + x; val s = fy * cw + fx
-                        su[o] += f.u[s].toInt() and 0xFF; sv[o] += f.v[s].toInt() and 0xFF; nc[o]++
-                    }
-                }
+        if (combine == Combine.MEAN && frames >= MAX_MEAN_FRAMES) return
+        minDx = min(minDx, dx); maxDx = max(maxDx, dx); minDy = min(minDy, dy); maxDy = max(maxDy, dy)
+        val fy = f.y; val fu = f.u; val fv = f.v
+
+        // Luma: the valid x range is computed once per frame, not checked per pixel.
+        val x0 = max(0, -dx); val x1 = min(w, w - dx)
+        for (y in max(0, -dy) until min(h, h - dy)) {
+            val ro = y * w; val rf = (y + dy) * w + dx
+            if (combine == Combine.MEAN) {
+                for (x in x0 until x1) sy[ro + x] = (sy[ro + x].code + (fy[rf + x].toInt() and 0xFF)).toChar()
+            } else {
+                for (x in x0 until x1) { val v = fy[rf + x].toInt() and 0xFF; if (v > sy[ro + x].code) sy[ro + x] = v.toChar() }
             }
-            Combine.LIGHTEN -> {
-                for (y in 0 until h) {
-                    val fy = y + ddy; if (fy !in 0 until h) continue
-                    val ro = y * w; val rf = fy * w
-                    for (x in 0 until w) {
-                        val fx = x + ddx; if (fx !in 0 until w) continue
-                        val v = f.y[rf + fx].toInt() and 0xFF
-                        if (n[ro + x] == 0 || v > sy[ro + x]) sy[ro + x] = v
-                        n[ro + x] = 1
-                    }
+        }
+
+        val cdx = Math.floorDiv(dx, 2); val cdy = Math.floorDiv(dy, 2)
+        val cx0 = max(0, -cdx); val cx1 = min(cw, cw - cdx)
+        for (y in max(0, -cdy) until min(ch, ch - cdy)) {
+            val ro = y * cw; val rf = (y + cdy) * cw + cdx
+            if (combine == Combine.MEAN) {
+                for (x in cx0 until cx1) {
+                    su[ro + x] = (su[ro + x].code + (fu[rf + x].toInt() and 0xFF)).toChar()
+                    sv[ro + x] = (sv[ro + x].code + (fv[rf + x].toInt() and 0xFF)).toChar()
                 }
-                for (y in 0 until ch) {
-                    val fy = y + cdy; if (fy !in 0 until ch) continue
-                    for (x in 0 until cw) {
-                        val fx = x + cdx; if (fx !in 0 until cw) continue
-                        // Chroma follows the brightest 2x2 block, so trails keep their colour.
-                        val o = y * cw + x; val s = fy * cw + fx
-                        val r0 = (2 * fy) * w + 2 * fx
-                        val bl = (f.y[r0].toInt() and 0xFF) + (f.y[r0 + 1].toInt() and 0xFF) +
-                            (f.y[r0 + w].toInt() and 0xFF) + (f.y[r0 + w + 1].toInt() and 0xFF)
-                        if (bl > blockLuma[o]) { blockLuma[o] = bl; su[o] = f.u[s].toInt() and 0xFF; sv[o] = f.v[s].toInt() and 0xFF }
-                        nc[o] = 1
+            } else {
+                val bl = blockLuma!!
+                val ly = 2 * (y + cdy)
+                for (x in cx0 until cx1) {
+                    // Chroma follows the brightest 2x2 block, so trails keep their colour.
+                    val lx = 2 * (x + cdx); val r0 = ly * w + lx
+                    val b = (fy[r0].toInt() and 0xFF) + (fy[r0 + 1].toInt() and 0xFF) +
+                        (fy[r0 + w].toInt() and 0xFF) + (fy[r0 + w + 1].toInt() and 0xFF)
+                    if (b > bl[ro + x]) {
+                        bl[ro + x] = b.toShort()
+                        su[ro + x] = (fu[rf + x].toInt() and 0xFF).toChar()
+                        sv[ro + x] = (fv[rf + x].toInt() and 0xFF).toChar()
                     }
                 }
             }
@@ -214,7 +216,7 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine) {
         frames++
     }
 
-    /** The merged frame, cropped to the region all frames covered. */
+    /** The merged frame, cropped to the region all frames covered, dithered to 8 bits. */
     fun result(): YuvFrame {
         check(frames > 0) { "no frames" }
         // Even crop origin keeps chroma sites aligned with luma.
@@ -222,15 +224,30 @@ class Stacker(val w: Int, val h: Int, private val combine: Combine) {
         val top = ((-minDy).coerceAtLeast(0) + 1) and 1.inv(); val bottom = (h - maxDy).coerceAtMost(h)
         val ow = (right - left) and 1.inv(); val oh = (bottom - top) and 1.inv()
         val oy = ByteArray(ow * oh); val ou = ByteArray((ow / 2) * (oh / 2)); val ov = ByteArray(ou.size)
-        for (y in 0 until oh) for (x in 0 until ow) {
-            val i = (y + top) * w + (x + left)
-            oy[y * ow + x] = (if (n[i] == 0) 0 else ((sy[i] + n[i] / 2) / n[i])).coerceIn(0, 255).toByte()
+        val n = if (combine == Combine.MEAN) min(frames, MAX_MEAN_FRAMES) else 1
+        // Fixed point: value = (sum * 16 + dither * n) / (16 * n), dither in 0..15 centred by the rounding.
+        val den = 16 * n
+        for (y in 0 until oh) {
+            val src = (y + top) * w + left; val dst = y * ow; val drow = (y and 3) * 4
+            for (x in 0 until ow) {
+                val sum = sy[src + x].code
+                oy[dst + x] = (if (n == 1) sum else (sum * 16 + BAYER[drow + (x and 3)] * n + n / 2) / den).coerceIn(0, 255).toByte()
+            }
         }
-        for (y in 0 until oh / 2) for (x in 0 until ow / 2) {
-            val i = (y + top / 2) * cw + (x + left / 2)
-            val c = nc[i]
-            ou[y * (ow / 2) + x] = (if (c == 0) 128 else (su[i] + c / 2) / c).coerceIn(0, 255).toByte()
-            ov[y * (ow / 2) + x] = (if (c == 0) 128 else (sv[i] + c / 2) / c).coerceIn(0, 255).toByte()
+        val cw2 = ow / 2
+        for (y in 0 until oh / 2) {
+            val src = (y + top / 2) * cw + left / 2; val dst = y * cw2; val drow = (y and 3) * 4
+            for (x in 0 until cw2) {
+                val d = BAYER[drow + (x and 3)] * n
+                if (combine == Combine.LIGHTEN && blockLuma!![src + x] < 0) {
+                    ou[dst + x] = 128.toByte(); ov[dst + x] = 128.toByte()
+                } else if (n == 1) {
+                    ou[dst + x] = su[src + x].code.toByte(); ov[dst + x] = sv[src + x].code.toByte()
+                } else {
+                    ou[dst + x] = ((su[src + x].code * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
+                    ov[dst + x] = ((sv[src + x].code * 16 + d + n / 2) / den).coerceIn(0, 255).toByte()
+                }
+            }
         }
         return YuvFrame(ow, oh, oy, ou, ov)
     }
@@ -311,18 +328,81 @@ object DoubleExposure {
     /** Blends two equally sized ARGB images, the way in-camera multiple exposure modes do. */
     fun blend(a: IntArray, b: IntArray, mode: Blend): IntArray {
         require(a.size == b.size)
-        return IntArray(a.size) { i ->
-            val pa = a[i]; val pb = b[i]
-            fun ch(shift: Int): Int {
-                val x = (pa shr shift) and 0xFF; val y = (pb shr shift) and 0xFF
-                return when (mode) {
-                    Blend.SCREEN -> 255 - (255 - x) * (255 - y) / 255
-                    Blend.LIGHTEN -> max(x, y)
-                    Blend.DARKEN -> min(x, y)
-                    Blend.AVERAGE -> (x + y + 1) / 2
-                }
+        return IntArray(a.size) { i -> blendPixel(a[i], b[i], mode) }
+    }
+
+    fun blendPixel(pa: Int, pb: Int, mode: Blend): Int {
+        fun ch(shift: Int): Int {
+            val x = (pa shr shift) and 0xFF; val y = (pb shr shift) and 0xFF
+            return when (mode) {
+                Blend.SCREEN -> 255 - (255 - x) * (255 - y) / 255
+                Blend.LIGHTEN -> max(x, y)
+                Blend.DARKEN -> min(x, y)
+                Blend.AVERAGE -> (x + y + 1) / 2
             }
-            (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
         }
+        return (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+}
+
+/**
+ * Turns frames into upright ARGB rows: rotation (clockwise degrees), an optional 4x5 colour
+ * matrix (android ColorMatrix layout, offsets in 0..255) and sampling every [step] pixels,
+ * all in one pass. Rows go to [sink], so the caller never holds a full ARGB array.
+ */
+object Render {
+    fun outSize(w: Int, h: Int, rotation: Int, step: Int = 1): Pair<Int, Int> {
+        val sw = w / step; val sh = h / step
+        return if (rotation % 180 == 90) sh to sw else sw to sh
+    }
+
+    fun rows(f: YuvFrame, rotation: Int, matrix: FloatArray?, step: Int = 1, sink: (Int, IntArray) -> Unit) =
+        walk(f.w, f.h, rotation, step, sink) { x, y -> applyMatrix(argb(f, x, y), matrix) }
+
+    fun blendRows(a: YuvFrame, b: YuvFrame, mode: Blend, rotation: Int, matrix: FloatArray?, step: Int = 1, sink: (Int, IntArray) -> Unit) {
+        require(a.w == b.w && a.h == b.h) { "frame sizes differ" }
+        walk(a.w, a.h, rotation, step, sink) { x, y -> applyMatrix(DoubleExposure.blendPixel(argb(a, x, y), argb(b, x, y), mode), matrix) }
+    }
+
+    private inline fun walk(w: Int, h: Int, rotation: Int, step: Int, sink: (Int, IntArray) -> Unit, px: (Int, Int) -> Int) {
+        val sw = w / step; val sh = h / step
+        val (ow, oh) = outSize(w, h, rotation, step)
+        val row = IntArray(ow)
+        val r = ((rotation % 360) + 360) % 360
+        for (yo in 0 until oh) {
+            for (xo in 0 until ow) {
+                // Inverse mapping: which sampled source pixel lands at (xo, yo) after rotating.
+                val xs: Int; val ys: Int
+                when (r) {
+                    90 -> { xs = yo; ys = sh - 1 - xo }
+                    180 -> { xs = sw - 1 - xo; ys = sh - 1 - yo }
+                    270 -> { xs = sw - 1 - yo; ys = xo }
+                    else -> { xs = xo; ys = yo }
+                }
+                row[xo] = px(xs * step, ys * step)
+            }
+            sink(yo, row)
+        }
+    }
+
+    /** BT.601 full range, as Yuv.toArgb. */
+    fun argb(f: YuvFrame, x: Int, y: Int): Int {
+        val yy = f.y[y * f.w + x].toInt() and 0xFF
+        val ci = (y shr 1) * f.cw + (x shr 1)
+        val u = (f.u[ci].toInt() and 0xFF) - 128
+        val v = (f.v[ci].toInt() and 0xFF) - 128
+        val r = (yy + 1.402f * v).roundToInt().coerceIn(0, 255)
+        val g = (yy - 0.344136f * u - 0.714136f * v).roundToInt().coerceIn(0, 255)
+        val b = (yy + 1.772f * u).roundToInt().coerceIn(0, 255)
+        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    fun applyMatrix(p: Int, m: FloatArray?): Int {
+        if (m == null) return p
+        val r = (p shr 16) and 0xFF; val g = (p shr 8) and 0xFF; val b = p and 0xFF
+        val nr = (m[0] * r + m[1] * g + m[2] * b + m[3] * 255 + m[4]).roundToInt().coerceIn(0, 255)
+        val ng = (m[5] * r + m[6] * g + m[7] * b + m[8] * 255 + m[9]).roundToInt().coerceIn(0, 255)
+        val nb = (m[10] * r + m[11] * g + m[12] * b + m[13] * 255 + m[14]).roundToInt().coerceIn(0, 255)
+        return (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
     }
 }

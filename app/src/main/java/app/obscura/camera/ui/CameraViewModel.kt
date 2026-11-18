@@ -21,11 +21,9 @@ import app.obscura.camera.camera.MediaSaver
 import app.obscura.camera.camera.OutputFormat
 import app.obscura.camera.camera.ProbeReport
 import app.obscura.camera.time.Blend
-import app.obscura.camera.time.DoubleExposure
 import app.obscura.camera.time.Roi
 import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
-import app.obscura.camera.time.Yuv
 import app.obscura.camera.time.YuvFrame
 import app.obscura.camera.time.YuvImages
 import kotlinx.coroutines.Dispatchers
@@ -262,7 +260,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
             _state.update { it.copy(progress = null, busyText = "מעבד ${session.frames} פריימים") }
             val label = when (mode) { TimeMode.PANNING -> "פאנינג"; TimeMode.LIGHT_TRAILS -> "עקבות אור"; else -> "חשיפה ארוכה" }
             val description = "Obscura $label · ${session.frames} frames · ${stats.dropped} dropped · ${duration} ms · max shift ${session.maxShift}px"
-            saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation) }
+            val look = _state.value.look
+            saveComputed(label, description) { YuvImages.toBitmap(session.result(), stats.orientation, look.matrix.takeUnless { look.isNeutral }) }
             if (stats.dropped > session.frames) notify("$label · ${session.frames} פריימים (${stats.dropped} נזרקו כדי לשמור על קצב)")
         }
     }
@@ -280,23 +279,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
             }
             if (first == null) {
                 doubleFirst = frame
-                val ghost = runCatching {
-                    val full = YuvImages.toBitmap(frame, stats.orientation)
-                    Bitmap.createScaledBitmap(full, full.width / 4, full.height / 4, true).also { full.recycle() }
-                }.getOrNull()
+                // The ghost is sampled straight from the frame at 1/4 size: no full-size bitmap.
+                val ghost = runCatching { YuvImages.toBitmap(frame, stats.orientation, step = 4) }.getOrNull()
                 _state.update { it.copy(capturing = false, busyText = null, doubleGhost = ghost?.asImageBitmap()) }
                 notify("עכשיו כוון את הפריים השני מעל הראשון")
             } else {
                 doubleFirst = null
                 val blend = _state.value.blend
                 _state.update { it.copy(doubleGhost = null) }
+                val look = _state.value.look
                 saveComputed("חשיפה כפולה", "Obscura double exposure · ${blend.name.lowercase()}") {
-                    require(first.w == frame.w && first.h == frame.h) { "frame sizes differ" }
-                    val px = DoubleExposure.blend(Yuv.toArgb(first), Yuv.toArgb(frame), blend)
-                    val bmp = Bitmap.createBitmap(px, frame.w, frame.h, Bitmap.Config.ARGB_8888)
-                    if (stats.orientation % 360 == 0) bmp
-                    else Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height,
-                        android.graphics.Matrix().apply { postRotate(stats.orientation.toFloat()) }, true).also { bmp.recycle() }
+                    YuvImages.blendToBitmap(first, frame, blend, stats.orientation, look.matrix.takeUnless { look.isNeutral })
                 }
             }
         }
@@ -307,7 +300,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         try {
             val bmp = render()
             val name = "OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date())
-            val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description)
+            // The look was applied while rendering; the saver only records its name.
+            val uri = MediaSaver.saveBitmap(getApplication(), bmp, _state.value.look, name, description, lookApplied = true)
             val thumb = Bitmap.createScaledBitmap(bmp, (bmp.width / 16).coerceAtLeast(1), (bmp.height / 16).coerceAtLeast(1), true)
             bmp.recycle()
             _state.update {

@@ -4,11 +4,15 @@ import app.obscura.camera.time.Align
 import app.obscura.camera.time.Blend
 import app.obscura.camera.time.DoubleExposure
 import app.obscura.camera.time.Pyramid
+import app.obscura.camera.time.Render
+import app.obscura.camera.time.Stacker
+import app.obscura.camera.time.Combine
 import app.obscura.camera.time.Roi
 import app.obscura.camera.time.TimeMode
 import app.obscura.camera.time.TimeSession
 import app.obscura.camera.time.Yuv
 import app.obscura.camera.time.YuvFrame
+import app.obscura.camera.camera.Looks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -170,9 +174,9 @@ class TimeEngineTest {
         assertTrue("mean luma error ${err / f.y.size}", err / f.y.size <= 2)
     }
 
-    @Test fun phoneSizedFramesStayWithinBudget() {
-        // 2560x1920 is the time-mode stream size. A textured frame, shifted per frame.
-        val w = 2560; val h = 1920
+    @Test fun fullResolutionFramesStayWithinBudget() {
+        // 4096x3072 (12.6 MP) is the full time-mode stream on the Xiaomi 15T.
+        val w = 4096; val h = 3072
         val base = ByteArray(w * h) { i -> texture((i % w), (i / w)).toByte() }
         val uv = ByteArray((w / 2) * (h / 2)) { 128.toByte() }
         fun shifted(dx: Int, dy: Int) = YuvFrame(w, h, ByteArray(w * h) { i ->
@@ -180,14 +184,63 @@ class TimeEngineTest {
         }, uv.copyOf(), uv.copyOf())
         val frames = (0 until 6).map { shifted(it * 3, -it * 2) }
         val session = TimeSession(TimeMode.LONG_EXPOSURE, null)
-        session.add(frames[0]) // warm-up + reference
+        session.add(frames[0])
         val t0 = System.nanoTime()
         for (f in frames.drop(1)) session.add(f)
         val perFrameMs = (System.nanoTime() - t0) / 1e6 / (frames.size - 1)
         val r0 = System.nanoTime(); val out = session.result(); val resultMs = (System.nanoTime() - r0) / 1e6
-        println("perf: %.0f ms per 4.9MP frame (align + accumulate), result %.0f ms, max shift %d, out %dx%d"
-            .format(perFrameMs, resultMs, session.maxShift, out.w, out.h))
+        val q0 = System.nanoTime(); var rows = 0
+        Render.rows(out, 90, Looks.IVORY.matrix) { _, _ -> rows++ }
+        val renderMs = (System.nanoTime() - q0) / 1e6
+        println("perf 12.6MP: %.0f ms per frame (align + accumulate), merge %.0f ms, render+rotate+look %.0f ms, out %dx%d"
+            .format(perFrameMs, resultMs, renderMs, out.w, out.h))
         assertEquals("alignment found the 15 px drift", 15, session.maxShift)
-        assertTrue("per-frame cost $perFrameMs ms", perFrameMs < 600)
+        assertEquals("rotated output has one row per source column", out.w, rows)
+        assertTrue("output keeps full resolution (${out.w}x${out.h})", out.w >= w - 20 && out.h >= h - 20)
+        assertTrue("per-frame cost $perFrameMs ms", perFrameMs < 900)
+    }
+
+    @Test fun renderRotationMatchesReference() {
+        // A 6x4 frame where every pixel is unique; compare Render against a direct rotation.
+        val w = 6; val h = 4
+        val px = IntArray(w * h) { i -> rgb(i * 10, 255 - i * 10, (i * 37) % 255) }
+        val f = Yuv.fromArgb(px, w, h)
+        val ref = Yuv.toArgb(f)
+        for (rot in listOf(0, 90, 180, 270)) {
+            val (ow, oh) = Render.outSize(w, h, rot)
+            val got = IntArray(ow * oh)
+            Render.rows(f, rot, null) { y, row -> row.copyInto(got, y * ow) }
+            for (yo in 0 until oh) for (xo in 0 until ow) {
+                // Forward rotation clockwise: source (x, y) -> (h-1-y, x) for 90, etc.
+                val (xs, ys) = when (rot) { 90 -> yo to (h - 1 - xo); 180 -> (w - 1 - xo) to (h - 1 - yo); 270 -> (w - 1 - yo) to xo; else -> xo to yo }
+                assertEquals("rot $rot at ($xo,$yo)", ref[ys * w + xs], got[yo * ow + xo])
+            }
+        }
+        // Top-left of the source ends top-right after a clockwise quarter turn.
+        val (ow90, _) = Render.outSize(w, h, 90)
+        val got90 = IntArray(ow90 * w); Render.rows(f, 90, null) { y, row -> row.copyInto(got90, y * ow90) }
+        assertEquals(ref[0], got90[ow90 - 1])
+    }
+
+    @Test fun ditherKeepsTheFractionalMean() {
+        // Eight frames alternating 100 and 101: the true mean is 100.5. Plain rounding gives a
+        // flat 100 or 101 (banding in skies); dithering keeps the average.
+        val w = 64; val h = 64
+        val st = Stacker(w, h, Combine.MEAN)
+        repeat(8) { i ->
+            val v = (100 + i % 2).toByte()
+            st.add(YuvFrame(w, h, ByteArray(w * h) { v }, ByteArray(w * h / 4) { 128.toByte() }, ByteArray(w * h / 4) { 128.toByte() }))
+        }
+        val out = st.result()
+        val values = out.y.map { it.toInt() and 0xFF }
+        val mean = values.average()
+        println("dither: mean %.3f, values %s".format(mean, values.toSet().sorted()))
+        assertTrue("mean $mean", mean in 100.35..100.65)
+        assertEquals(setOf(100, 101), values.toSet())
+    }
+
+    @Test fun neutralLookIsIdentity() {
+        val p = rgb(12, 130, 250)
+        assertEquals(p, Render.applyMatrix(p, Looks.NEUTRAL.matrix))
     }
 }
