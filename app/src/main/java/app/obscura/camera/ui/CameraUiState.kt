@@ -125,6 +125,10 @@ data class CameraUiState(
     val macroPlanes: Int = 10,
     /** Pro sheet: hold to see the scene with every setting on automatic. */
     val comparing: Boolean = false,
+    /** Diagnostic recording of portrait/macro sweeps (frames, metadata, intermediates -> zip). */
+    val diag: Boolean = false,
+    val diagFull: Boolean = true,
+    val diagRaw: Boolean = false,
     /** Settings sheet (display, files, advanced data). */
     val settingsOpen: Boolean = false,
     /** Professional panel: every Camera2 control, plus the live capture result. */
@@ -181,6 +185,9 @@ interface CameraActions {
     fun closePortrait() {}
     fun compare(on: Boolean) {}
     fun openSettings() {}
+    fun setDiag(on: Boolean) {}
+    fun setDiagFull(on: Boolean) {}
+    fun setDiagRaw(on: Boolean) {}
     fun closeSettings() {}
     fun toggleSelfie() {}
     fun toggleCoach() {}

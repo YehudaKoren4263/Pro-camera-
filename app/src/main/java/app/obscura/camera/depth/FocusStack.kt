@@ -143,7 +143,8 @@ object FocusStack {
         return out
     }
 
-    class DepthMap(val depth: Plane, val confidence: Plane)
+    /** Depth after filling, its confidence, and the raw per-pixel depth before filling (for diagnostics). */
+    class DepthMap(val depth: Plane, val confidence: Plane, val raw: Plane = depth)
 
     /**
      * Per-pixel depth (in diopters, 1/m) from aligned sharpness planes, one per focus distance.
@@ -168,7 +169,7 @@ object FocusStack {
             val mean = sum / n
             conf.v[i] = if (best <= 1e-7f) 0f else ((best - mean) / best).coerceIn(0f, 1f) * min(1f, best / 2e-4f)
         }
-        return DepthMap(fill(d, conf, guide), conf)
+        return DepthMap(fill(d, conf, guide), conf, d)
     }
 
     /** Edge-aware filling: low-confidence pixels take the depth of similar-looking neighbours. */

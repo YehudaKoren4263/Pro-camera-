@@ -15,8 +15,8 @@ android {
         applicationId = "app.obscura.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.1.1"
+        versionCode = 14
+        versionName = "1.2.0"
     }
 
     // Release signing is read from keystore.properties (never committed). Point OBSCURA_KEYSTORE
@@ -48,6 +48,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+    testOptions {
+        // Replay a diagnostic dump from the phone: ./gradlew :app:testDebugUnitTest --tests '*Replay*' -Dobscura.dump=/path/diag_x.zip
+        unitTests.all { it.systemProperty("obscura.dump", System.getProperty("obscura.dump") ?: "") }
     }
     buildFeatures {
         compose = true

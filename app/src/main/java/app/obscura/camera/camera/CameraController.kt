@@ -14,6 +14,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureFailure
+import android.hardware.camera2.DngCreator
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
@@ -125,8 +126,28 @@ class CameraController(private val context: Context, private val listener: Liste
     @Volatile var dumpResults = false
     private var lastDumpAt = 0L
 
-    private fun dump(result: TotalCaptureResult): List<Pair<String, String>> {
-        fun fmt(v: Any?): String = when (v) {
+    private fun dump(result: CaptureResult): List<Pair<String, String>> {
+        return result.keys.map { k ->
+            @Suppress("UNCHECKED_CAST")
+            val v = runCatching { result.get(k as CaptureResult.Key<Any>) }.getOrNull()
+            k.name to fmt(v)
+        }.sortedBy { it.first }
+    }
+
+    /** Every characteristic of the open camera (and its physical cameras), vendor keys included. */
+    fun characteristicsDump(): List<Pair<String, String>> {
+        val ch = characteristics ?: return emptyList()
+        val out = ArrayList<Pair<String, String>>()
+        fun add(prefix: String, c: CameraCharacteristics) = c.keys.forEach { k ->
+            @Suppress("UNCHECKED_CAST")
+            out += (prefix + k.name) to fmt(runCatching { c.get(k as CameraCharacteristics.Key<Any>) }.getOrNull())
+        }
+        add("", ch)
+        ch.physicalCameraIds.forEach { id -> runCatching { add("physical[$id].", manager.getCameraCharacteristics(id)) } }
+        return out
+    }
+
+    private fun fmt(v: Any?): String = when (v) {
             null -> "—"
             is IntArray -> v.contentToString(); is FloatArray -> v.joinToString(", ", "[", "]") { "%.4g".format(java.util.Locale.US, it) }
             is LongArray -> v.contentToString(); is ByteArray -> v.contentToString(); is BooleanArray -> v.contentToString()
@@ -134,13 +155,7 @@ class CameraController(private val context: Context, private val listener: Liste
             is Array<*> -> v.joinToString(", ", "[", "]") { fmt(it) }
             is Float -> "%.5g".format(java.util.Locale.US, v)
             else -> v.toString()
-        }.let { if (it.length > 220) it.take(220) + "…" else it }
-        return result.keys.map { k ->
-            @Suppress("UNCHECKED_CAST")
-            val v = runCatching { result.get(k as CaptureResult.Key<Any>) }.getOrNull()
-            k.name to fmt(v)
-        }.sortedBy { it.first }
-    }
+        }.let { if (it.length > 600) it.take(600) + "…" else it }
 
     /** Face rectangles from sensor space to the upright, possibly mirrored, viewfinder. */
     private fun faces(result: CaptureResult): List<FloatArray> {
@@ -319,7 +334,8 @@ class CameraController(private val context: Context, private val listener: Liste
             ?: error("no stream map")
         val jpegSize = map.getOutputSizes(ImageFormat.JPEG).filter { isFourThree(it) }.maxByOrNull { it.area }
             ?: map.getOutputSizes(ImageFormat.JPEG).maxBy { it.area }
-        val rawSize = if (raw) map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.area } else null
+        val rawSize = if (raw || (timeSession && diagRaw && lens.raw && lens.physicalId == null))
+            map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.area } else null
         // Time modes stream YUV at the largest 4:3 size the lens offers (12.6 MP on the 15T):
         // quality first. The engine keeps memory flat and drops frames rather than pixels.
         val yuvSize = if (timeSession) {
@@ -335,7 +351,7 @@ class CameraController(private val context: Context, private val listener: Liste
         manager.openCamera(lens.cameraId, executor, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 device = camera
-                if (yuvSize != null) createTimeSession(camera, lens, yuvSize, preview)
+                if (yuvSize != null) createTimeSession(camera, lens, yuvSize, preview, if (diagRaw) rawSize else null, texture)
                 else createSession(camera, lens, jpegSize, rawSize, preview, texture, rawRefused)
             }
             override fun onDisconnected(camera: CameraDevice) { camera.close(); device = null }
@@ -379,11 +395,14 @@ class CameraController(private val context: Context, private val listener: Liste
         camera.createCaptureSession(config)
     }
 
-    private fun createTimeSession(camera: CameraDevice, lens: Lens, yuv: Size, preview: Size) {
+    private fun createTimeSession(camera: CameraDevice, lens: Lens, yuv: Size, preview: Size, raw: Size? = null, texture: SurfaceTexture? = null) {
         val yr = ImageReader.newInstance(yuv.width, yuv.height, ImageFormat.YUV_420_888, 4)
         yuvReader = yr
         yr.setOnImageAvailableListener({ r -> onYuv(r) }, handler)
-        val outputs = listOfNotNull(previewSurface, yr.surface).map { s ->
+        val rr = raw?.let { ImageReader.newInstance(it.width, it.height, ImageFormat.RAW_SENSOR, 4) }
+        rawReader = rr
+        rr?.setOnImageAvailableListener({ r -> onRaw(r) }, handler)
+        val outputs = listOfNotNull(previewSurface, yr.surface, rr?.surface).map { s ->
             OutputConfiguration(s).also { oc -> lens.physicalId?.let { oc.setPhysicalCameraId(it) } }
         }
         camera.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, executor,
@@ -393,7 +412,13 @@ class CameraController(private val context: Context, private val listener: Liste
                     startRepeating()
                     listener.onOpened(SessionInfo(lens, false, yuv, null, preview, false, yuv = yuv))
                 }
-                override fun onConfigureFailed(s: CameraCaptureSession) = listener.onError("העדשה סירבה לזרם של מצבי הזמן")
+                override fun onConfigureFailed(s: CameraCaptureSession) {
+                    if (rr != null && texture != null) {
+                        // YUV + RAW together refused: diagnostics continue without DNGs, and say so.
+                        Log.w(TAG, "time session with RAW refused"); diagRaw = false; diagRawRefused = true
+                        closeInternal(); openInternal(lens, texture, raw = false, rawRefused = false)
+                    } else listener.onError("העדשה סירבה לזרם של מצבי הזמן")
+                }
             }))
     }
 
@@ -472,6 +497,7 @@ class CameraController(private val context: Context, private val listener: Liste
             previewSurface?.let { b.addTarget(it) }
             val rec = recording
             if ((rec != null && !rec.single) || sweep != null) yuvReader?.let { b.addTarget(it.surface) }
+            if (sweep != null && diagRaw && timeSession) rawReader?.let { b.addTarget(it.surface) }
             apply(b)
             val sw = sweep
             // Exposure and colour lock from the second sweep frame on: depth must not see flicker.
@@ -693,7 +719,23 @@ class CameraController(private val context: Context, private val listener: Liste
 
     // ---- Focus sweep: depth from focus and macro stacking -------------------------------------
 
-    private class Sweep(val targets: List<Float>, val sink: (YuvFrame, Float, Int) -> Unit, val onDone: (BurstStats) -> Unit) {
+    /**
+     * One capture result seen during a sweep: the raw evidence of what the lens and the camera
+     * really did (every frame, accepted or not).
+     */
+    data class SweepEntry(
+        val ts: Long, val target: Float?, val lensState: Int?, val focus: Float?,
+        val iso: Int?, val exposureNs: Long?, val frameNs: Long?, val physicalId: String?,
+        val afMode: Int?, val afState: Int?, val aeState: Int?, val awbState: Int?,
+        val ois: Int?, val edge: Int?, val nr: Int?, val gains: String?,
+        val rows: List<Pair<String, String>>?,
+    ) { var accepted = false; var index = -1 }
+
+    private class Sweep(val targets: List<Float>, val sink: (YuvFrame, Float, Int) -> Unit, val onDone: (BurstStats, List<SweepEntry>) -> Unit) {
+        val log = ArrayList<SweepEntry>()
+        val results = LinkedHashMap<Long, TotalCaptureResult>()
+        val acceptedTs = HashMap<Long, Int>()
+        val pendingRaw = LinkedHashMap<Long, Image>()
         /** -1: the autofocus frame (as the camera focused it), then each target in turn. */
         var index = -1
         var framesSinceSet = 0
@@ -708,7 +750,7 @@ class CameraController(private val context: Context, private val listener: Liste
      * One frame at the autofocus distance, then one frame at each of [diopters] with the lens
      * settled there (exposure and colour locked). [sink] gets (frame, focus distance, index).
      */
-    fun focusSweep(diopters: List<Float>, sink: (YuvFrame, Float, Int) -> Unit, onDone: (BurstStats) -> Unit) = handler.post {
+    fun focusSweep(diopters: List<Float>, sink: (YuvFrame, Float, Int) -> Unit, onDone: (BurstStats, List<SweepEntry>) -> Unit) = handler.post {
         if (!timeSession || session == null || yuvReader == null || recording != null || sweep != null) {
             listener.onError("המצלמה עוד לא מוכנה למצב הזה"); return@post
         }
@@ -719,7 +761,31 @@ class CameraController(private val context: Context, private val listener: Liste
         handler.postDelayed({ if (sweep === sw) endSweep(sw) }, 9000)
     }
 
+    /** Diagnostics: full metadata per frame and, if the stream allows, a DNG per accepted frame. */
+    @Volatile var diagnostics = false
+    @Volatile var diagRaw = false
+    @Volatile var diagDir: java.io.File? = null
+    /** The HAL refused RAW next to the YUV stream: the dump will say so. */
+    @Volatile var diagRawRefused = false
+
+    private fun logSweep(sw: Sweep, result: TotalCaptureResult) {
+        val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+        val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+        sw.log += SweepEntry(
+            ts, sweepFocus, result.get(CaptureResult.LENS_STATE), result.get(CaptureResult.LENS_FOCUS_DISTANCE),
+            result.get(CaptureResult.SENSOR_SENSITIVITY), result.get(CaptureResult.SENSOR_EXPOSURE_TIME), result.get(CaptureResult.SENSOR_FRAME_DURATION),
+            if (android.os.Build.VERSION.SDK_INT >= 29) result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) else null,
+            result.get(CaptureResult.CONTROL_AF_MODE), result.get(CaptureResult.CONTROL_AF_STATE), result.get(CaptureResult.CONTROL_AE_STATE),
+            result.get(CaptureResult.CONTROL_AWB_STATE), result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE),
+            result.get(CaptureResult.EDGE_MODE), result.get(CaptureResult.NOISE_REDUCTION_MODE),
+            gains?.let { "%.4f,%.4f,%.4f,%.4f".format(java.util.Locale.US, it.red, it.greenEven, it.greenOdd, it.blue) },
+            if (diagnostics) dump(result) else null,
+        )
+        if (diagRaw) { sw.results[ts] = result; while (sw.results.size > 24) sw.results.remove(sw.results.keys.first()) }
+    }
+
     private fun sweepResult(sw: Sweep, result: CaptureResult) {
+        if (result is TotalCaptureResult) logSweep(sw, result)
         if (sw.readyTs != null) return
         sw.framesSinceSet++
         val state = result.get(CaptureResult.LENS_STATE)
@@ -740,6 +806,9 @@ class CameraController(private val context: Context, private val listener: Liste
         val frame = try { YuvImages.copy(img) } catch (e: Exception) { null } finally { img.close() }
         if (frame != null) {
             val i = sw.delivered++; val f = sw.readyFocus
+            sw.acceptedTs[frame.timestampNs] = i
+            sw.log.lastOrNull { it.ts == frame.timestampNs }?.let { it.accepted = true; it.index = i }
+            tryWriteRaw(sw, frame.timestampNs)
             processor.execute { try { sw.sink(frame, f, i) } catch (e: Throwable) { Log.e(TAG, "sweep sink", e) } }
         }
         sw.index++
@@ -752,8 +821,12 @@ class CameraController(private val context: Context, private val listener: Liste
         if (sweep !== sw) return
         sweep = null; sweepFocus = null
         startRepeating()
+        // Results that arrived after their frame: mark accepted entries now.
+        for (e in sw.log) sw.acceptedTs[e.ts]?.let { e.accepted = true; e.index = it }
+        sw.pendingRaw.values.forEach { runCatching { it.close() } }; sw.pendingRaw.clear()
         val stats = BurstStats(sw.delivered, 0, jpegOrientation())
-        processor.execute { sw.onDone(stats) }
+        val log = sw.log.toList()
+        processor.execute { sw.onDone(stats, log) }
     }
 
     /** Closest focus of the open lens, in diopters (0 = fixed focus). */
@@ -816,8 +889,30 @@ class CameraController(private val context: Context, private val listener: Liste
         pending?.let { it.jpeg = bytes; tryFinish() }
     }
 
+    /** A DNG for an accepted sweep frame, once both the image and its metadata are here. */
+    private fun tryWriteRaw(sw: Sweep, ts: Long) {
+        val idx = sw.acceptedTs[ts] ?: return
+        val img = sw.pendingRaw[ts] ?: return
+        val result = sw.results[ts] ?: return
+        val ch = characteristics ?: return
+        val dir = diagDir ?: return
+        sw.pendingRaw.remove(ts)
+        io.execute {
+            try {
+                DngCreator(ch, result).use { dng -> java.io.File(dir, "raw_$idx.dng").outputStream().buffered().use { dng.writeImage(it, img) } }
+            } catch (e: Exception) { Log.w(TAG, "diag dng", e) } finally { img.close() }
+        }
+    }
+
     private fun onRaw(r: ImageReader) {
         val img = r.acquireNextImage() ?: return
+        sweep?.let { sw ->
+            if (!diagRaw) { img.close(); return }
+            sw.pendingRaw[img.timestamp] = img
+            while (sw.pendingRaw.size > 3) { val k = sw.pendingRaw.keys.first(); sw.pendingRaw.remove(k)?.close() }
+            sw.pendingRaw.keys.toList().forEach { tryWriteRaw(sw, it) }
+            return
+        }
         rawBurst?.let { rb ->
             val frame = try { copyRaw(img) } catch (e: Throwable) { Log.w(TAG, "raw copy", e); null } finally { img.close() }
             if (frame == null) rb.failed++ else rb.images[frame.timestampNs] = frame

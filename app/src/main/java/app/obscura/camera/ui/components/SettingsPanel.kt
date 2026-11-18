@@ -59,6 +59,11 @@ fun SettingsPanel(s: CameraUiState, a: CameraActions, version: String, modifier:
             item { Choice("עיבוד טבעי", yesNo, s.natural, "בלי חידוד מלאכותי והפחתת רעש אגרסיבית של המכשיר.") { if (it != s.natural) a.toggleNatural() } }
 
             item { Head("מתקדם") }
+            item { Choice("הקלטת אבחון", yesNo, s.diag, "כל צילום פורטרט או מאקרו נשמר כ-zip בהורדות: כל הפריימים, כל נתוני המצלמה וכל שלבי הביניים. לשליחה לניתוח.") { if (it != s.diag) a.setDiag(it) } }
+            if (s.diag) {
+                item { Choice("פריימים מלאים", yesNo, s.diagFull, "נדרש לשחזור מלא של המאקרו. בערך 9MB לפריים.") { a.setDiagFull(it) } }
+                item { Choice("RAW לכל פריים", yesNo, s.diagRaw, "ניסיוני: אם המכשיר מאפשר RAW לצד הזרם, נשמר DNG לכל פריים בסריקה.") { a.setDiagRaw(it) } }
+            }
             item {
                 Row(Modifier.fillMaxWidth().padding(horizontal = Ob.gutter, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Pill("דוח חיישן", a::toggleSensor)

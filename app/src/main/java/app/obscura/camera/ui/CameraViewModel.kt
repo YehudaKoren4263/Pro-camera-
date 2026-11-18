@@ -385,13 +385,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         var full: YuvFrame? = null
         _state.update { it.copy(capturing = true, busyText = "מודד עומק · לא לזוז", progress = 0f) }
         val targets = portraitTargets(minD)
+        val rec = beginDiag("portrait", s, listOf("targets" to targets.joinToString(","), "min_focus_d" to "$minD", "k" to "$k"))
         controller.focusSweep(targets, sink = { frame, d, i ->
             if (i == 0) full = frame
-            planes += d to app.obscura.camera.depth.Plane.luma(frame, k)
+            val small = app.obscura.camera.depth.Plane.luma(frame, k)
+            planes += d to small
+            rec?.let { r -> runCatching { r.frame(i, d, frame, small) } }
             _state.update { it.copy(progress = (i + 1f) / (targets.size + 1)) }
-        }) { stats ->
+        }) { stats, log ->
+            rec?.sweepLog(log)
             val f = full
             if (f == null || planes.size < 4) {
+                rec?.let { r -> r.note("FAILED: frames=${planes.size}"); finishDiag(r) }
                 _state.update { it.copy(capturing = false, busyText = null, progress = null) }
                 notify("סריקת הפוקוס לא הושלמה. נסה שוב, ביציבות"); return@focusSweep
             }
@@ -399,8 +404,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 _state.update { it.copy(busyText = "מחשב מפת עומק", progress = null) }
                 val ref = planes[0].second
                 val sorted = planes.sortedBy { it.first }
-                val sharp = sorted.map { (_, p) -> app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(p), app.obscura.camera.depth.FocusStack.align(ref, p)) }
-                val depth = app.obscura.camera.depth.FocusStack.depth(sharp, sorted.map { it.first }, ref).depth.rotate(stats.orientation)
+                val warps = sorted.map { (_, p) -> app.obscura.camera.depth.FocusStack.align(ref, p) }
+                val sharp = sorted.mapIndexed { j, (_, p) -> app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(p), warps[j]) }
+                val dm = app.obscura.camera.depth.FocusStack.depth(sharp, sorted.map { it.first }, ref)
+                val depth = dm.depth.rotate(stats.orientation)
+                rec?.let { r ->
+                    // Every intermediate, in the order the algorithm used them (sorted by focus).
+                    r.warps(sorted.mapIndexed { j, (d, _) -> listOf(planes.indexOfFirst { it.second === sorted[j].second }, warps[j].scale, warps[j].dx, warps[j].dy) })
+                    sharp.forEachIndexed { j, p -> r.plane("sharp_sorted_$j", p) }
+                    r.plane("depth_raw", dm.raw); r.plane("confidence", dm.confidence); r.plane("depth", dm.depth)
+                    r.pngPlane("vis_depth", dm.depth, sorted.first().first, sorted.last().first)
+                    r.pngPlane("vis_depth_raw", dm.raw, sorted.first().first, sorted.last().first)
+                    r.pngPlane("vis_confidence", dm.confidence, 0f, 1f)
+                    r.note("orientation=${stats.orientation} sorted_focus=${sorted.joinToString(",") { "%.3f".format(it.first) }}")
+                }
                 val upright = FrameOps.rotate(f, stats.orientation)
                 portraitFull = upright; portraitDepth = depth
                 // The subject: what autofocus chose, i.e. the depth at the centre of attention.
@@ -415,6 +432,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 portraitPreview = px; portraitPw = pw; portraitPh = ph
                 portraitPreviewDepth = depth.resize(pw, ph)
                 val params = app.obscura.camera.depth.BokehParams(fNumber = 1.4f, focus = focus, shape = _state.value.bokehShape)
+                rec?.let { r ->
+                    r.note("tap=${tap.x},${tap.y} focus_plane_d=$focus near=$near far=$far")
+                    // The default render and its circle-of-confusion map, at preview size.
+                    val pd = depth.resize(pw, ph)
+                    r.png("vis_preview_input", px, pw, ph)
+                    r.png("vis_bokeh_default", app.obscura.camera.depth.Bokeh.render(px, pw, ph, pd, params, rMax = pw * 0.06f, nSamples = 130), pw, ph)
+                    r.plane("coc_preview", app.obscura.camera.depth.Plane(pw, ph, FloatArray(pw * ph) { i ->
+                        minOf(pw * 0.06f, app.obscura.camera.depth.Bokeh.radius(pd.v[i], params, pw, (i / pw + 0.5f) / ph)) }))
+                    finishDiag(r)
+                }
                 _state.update { it.copy(capturing = false, busyText = null, portrait = PortraitStudio(params = params, near = near, far = far)) }
                 renderPortrait()
                 if (abs(near - far) < 0.4f) notify("לא נמדד הבדל עומק גדול. התקרב לנושא (עד 2 מ׳) לבוקה חזק")
@@ -548,27 +575,82 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         var merger: app.obscura.camera.depth.FocusStack.Merger? = null
         var oom = false
         _state.update { it.copy(capturing = true, busyText = "סורק $n מישורי פוקוס", progress = 0f) }
-        controller.focusSweep(targets, sink = { frame, _, i ->
+        val rec = beginDiag("macro", s, listOf("targets" to targets.joinToString(","), "min_focus_d" to "$minD", "k" to "$k", "planes" to "$n"))
+        val warpRows = ArrayList<List<Any>>()
+        controller.focusSweep(targets, sink = { frame, d, i ->
             if (oom) return@focusSweep
             try {
                 val small = app.obscura.camera.depth.Plane.luma(frame, k)
                 val r = ref ?: small.also { ref = it }
                 val m = merger ?: app.obscura.camera.depth.FocusStack.Merger(frame.w, frame.h, k).also { merger = it }
                 val wp = app.obscura.camera.depth.FocusStack.align(r, small)
-                m.add(frame, app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(small), wp), wp)
+                val sh = app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(small), wp)
+                rec?.let { rc -> runCatching { rc.frame(i, d, frame, small); rc.plane("sharp_$i", sh); warpRows += listOf(i, wp.scale, wp.dx, wp.dy) } }
+                m.add(frame, sh, wp)
                 _state.update { it.copy(progress = (i + 1f) / (n + 1)) }
             } catch (e: OutOfMemoryError) { oom = true; merger = null }
-        }) { stats ->
+        }) { stats, log ->
+            rec?.let { rc -> rc.sweepLog(log); rc.warps(warpRows); rc.note("orientation=${stats.orientation} oom=$oom") }
             val m = merger
             if (oom || m == null || m.frames < 3) {
+                rec?.let { rc -> rc.note("FAILED: frames=${m?.frames ?: 0}"); finishDiag(rc) }
                 _state.update { it.copy(capturing = false, busyText = null, progress = null) }
                 notify(if (oom) "אין מספיק זיכרון. נסה פחות מישורים" else "הסריקה לא הושלמה. נסה שוב"); return@focusSweep
             }
             _state.update { it.copy(busyText = "ממזג ${m.frames} מישורים", progress = null) }
             val look = _state.value.look
-            saveComputed("מאקרו", "Obscura macro · focus stack · ${m.frames} planes") { YuvImages.toBitmap(m.result(), stats.orientation, look) }
+            val merged = m.result()
+            rec?.let { rc ->
+                if (rc.fullFramesEnabled) rc.yuv("merged", merged)
+                val vb = YuvImages.toBitmap(merged, stats.orientation, null, step = 8)
+                val vp = IntArray(vb.width * vb.height).also { vb.getPixels(it, 0, vb.width, 0, 0, vb.width, vb.height) }
+                rc.png("vis_merged", vp, vb.width, vb.height); vb.recycle()
+                finishDiag(rc)
+            }
+            saveComputed("מאקרו", "Obscura macro · focus stack · ${m.frames} planes") { YuvImages.toBitmap(merged, stats.orientation, look) }
             merger = null
         }
+    }
+
+    // ---- Diagnostics ---------------------------------------------------------------------------
+
+    /** Starts a diagnostic recording when the setting is on: parameters and camera metadata first. */
+    private fun beginDiag(mode: String, s: CameraUiState, extra: List<Pair<String, String>>): app.obscura.camera.diag.DiagRecorder? {
+        if (!s.diag) { controller.diagnostics = false; controller.diagDir = null; return null }
+        val rec = app.obscura.camera.diag.DiagRecorder(getApplication(), mode, s.diagFull)
+        controller.diagnostics = true; controller.diagDir = rec.dir
+        val ctx = getApplication<Application>()
+        val version = runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?"
+        rec.params(listOf(
+            "mode" to mode, "app_version" to version, "device" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})",
+            "lens_key" to (s.activeLens?.key ?: "?"), "lens_mm" to "${s.activeLens?.equivMm}", "zoom" to "${s.zoom}", "crop" to "${controller.zoomRatio}",
+            "focus_point" to (s.focusPoint?.let { "${it.x},${it.y}" } ?: "none"), "natural" to "${s.natural}",
+            "settings" to s.settings.toString(), "diag_raw" to "${controller.diagRaw}", "diag_raw_refused" to "${controller.diagRawRefused}",
+            "full_frames" to "${s.diagFull}",
+        ) + extra)
+        rec.characteristics(controller.characteristicsDump())
+        return rec
+    }
+
+    private fun finishDiag(rec: app.obscura.camera.diag.DiagRecorder) {
+        controller.diagnostics = false; controller.diagDir = null
+        // DNGs are written on the I/O thread: give them a moment before zipping.
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(1500)
+            val uri = runCatching { rec.finish() }.getOrNull()
+            notify(if (uri != null) "אבחון נשמר: Download/Obscura/${rec.name}.zip" else "שמירת האבחון נכשלה")
+        }
+    }
+
+    override fun setDiag(on: Boolean) {
+        _state.update { it.copy(diag = on) }
+        notify(if (on) "הקלטת אבחון פועלת: כל צילום פורטרט/מאקרו יישמר כ-zip בהורדות" else "הקלטת אבחון כבויה")
+    }
+    override fun setDiagFull(on: Boolean) = _state.update { it.copy(diagFull = on) }
+    override fun setDiagRaw(on: Boolean) {
+        _state.update { it.copy(diagRaw = on) }
+        controller.diagRaw = on; controller.diagRawRefused = false
+        if (_state.value.mode.time) open()
     }
 
     // ---- Pro sheet helpers ---------------------------------------------------------------------

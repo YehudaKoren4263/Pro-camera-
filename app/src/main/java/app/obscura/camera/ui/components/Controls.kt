@@ -120,7 +120,8 @@ fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
                 Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", s.jpegMp)), Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
             }
             Spacer(Modifier.weight(1f))
-            if (s.mode.lab) Txt("מעבדה", Ob.LabelHe.copy(color = Ob.Brass, fontSize = 11.sp))
+            if (s.diag && s.mode.lab) Txt("● הקלטת אבחון", Ob.LabelHe.copy(color = Ob.Signal, fontSize = 11.sp))
+            else if (s.mode.lab) Txt("מעבדה", Ob.LabelHe.copy(color = Ob.Brass, fontSize = 11.sp))
             else if (s.coachOn) Txt("הצעות פעילות", Ob.LabelHe.copy(color = Ob.Smoke, fontSize = 11.sp))
         }
     }
