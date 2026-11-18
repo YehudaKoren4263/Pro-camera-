@@ -91,41 +91,54 @@ fun Ltr(content: @Composable () -> Unit) =
 @Composable
 fun TopBar(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = Ob.gutter)) {
-        Row(Modifier.fillMaxWidth().height(36.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
             Ltr { Txt("OBSCURA", Ob.Wordmark) }
             Spacer(Modifier.weight(1f))
-            Txt("מקצועי", Ob.LabelHe.copy(color = Ob.Ivory),
-                Modifier.border(0.8.dp, Ob.Brass, RoundedCornerShape(50)).press(a::openPro).padding(horizontal = 12.dp, vertical = 5.dp))
+            GearButton(a::openSettings)
             Spacer(Modifier.width(10.dp))
-            AccessBadge(s, Modifier.press(a::toggleSensor))
+            Txt("מקצועי", Ob.LabelHe.copy(color = if (s.proOpen) Ob.Ink else Ob.Brass, fontSize = 12.sp),
+                Modifier.background(if (s.proOpen) Ob.Brass else Color.Transparent, RoundedCornerShape(50))
+                    .border(0.8.dp, Ob.Brass, RoundedCornerShape(50)).press { if (s.proOpen) a.closePro() else a.openPro() }
+                    .padding(horizontal = 14.dp, vertical = 6.dp))
         }
-        Row(Modifier.fillMaxWidth().height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(26.dp), verticalAlignment = Alignment.CenterVertically) {
             val ownRaw = s.rawActive && !s.mode.time
             val format = when {
                 s.mode.time -> "JPEG"
-                !ownRaw -> if (s.rawRefused) "RAW נדחה" else "JPEG · בלי RAW"
+                !ownRaw -> if (s.rawRefused) "RAW נדחה" else "JPEG"
                 s.format == OutputFormat.RAW_JPEG -> "DNG + JPEG"
                 else -> "JPEG"
             }
             Toggle(format, ownRaw && s.format == OutputFormat.RAW_JPEG, onClick = a::toggleFormat)
             Txt("  ·  ", Ob.Mono.copy(color = Ob.Smoke))
             if (ownRaw) {
-                // Our own RAW development: 50 MP from a burst, or one frame at sensor size.
                 val mp = if (s.hiRes) s.rawMp * 4 else s.rawMp
                 Toggle(ltr(String.format(java.util.Locale.US, "%.0f MP", mp)), s.hiRes, onClick = a::toggleHiRes)
             } else {
                 Txt(ltr(String.format(java.util.Locale.US, "%.1f MP", s.jpegMp)), Ob.Mono.copy(color = Ob.Ivory.copy(alpha = 0.8f)))
             }
             Spacer(Modifier.weight(1f))
-            Toggle("הצעות", s.coachOn, onClick = a::toggleCoach)
-            Spacer(Modifier.width(14.dp))
-            Toggle("טבעי", s.natural, onClick = a::toggleNatural)
-            Spacer(Modifier.width(14.dp))
-            Toggle("רשת", s.grid, onClick = a::toggleGrid)
-            Spacer(Modifier.width(14.dp))
-            Toggle("פלס", s.level, onClick = a::toggleLevel)
-            Spacer(Modifier.width(14.dp))
-            Toggle("היסטוגרמה", s.histogramOn, onClick = a::toggleHistogram)
+            if (s.mode.lab) Txt("מעבדה", Ob.LabelHe.copy(color = Ob.Brass, fontSize = 11.sp))
+            else if (s.coachOn) Txt("הצעות פעילות", Ob.LabelHe.copy(color = Ob.Smoke, fontSize = 11.sp))
+        }
+    }
+}
+
+/** A thin gear: the way into settings. */
+@Composable
+fun GearButton(onClick: () -> Unit) {
+    Box(Modifier.size(34.dp).press(onClick), contentAlignment = Alignment.Center) {
+        androidx.compose.foundation.Canvas(Modifier.size(20.dp)) {
+            val c = center; val r = size.minDimension / 2
+            val st = androidx.compose.ui.graphics.drawscope.Stroke(1.4.dp.toPx())
+            drawCircle(Ob.Ivory.copy(alpha = 0.85f), radius = r * 0.62f, center = c, style = st)
+            drawCircle(Ob.Ivory.copy(alpha = 0.85f), radius = r * 0.24f, center = c, style = st)
+            for (i in 0 until 8) {
+                val ang = Math.toRadians(i * 45.0)
+                val dx = kotlin.math.cos(ang).toFloat(); val dy = kotlin.math.sin(ang).toFloat()
+                drawLine(Ob.Ivory.copy(alpha = 0.85f), androidx.compose.ui.geometry.Offset(c.x + dx * r * 0.62f, c.y + dy * r * 0.62f),
+                    androidx.compose.ui.geometry.Offset(c.x + dx * r * 0.95f, c.y + dy * r * 0.95f), 2.2.dp.toPx())
+            }
         }
     }
 }
@@ -296,6 +309,21 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                     }
                 }
             }
+            Mode.PORTRAIT -> {
+                Txt("המצלמה סורקת את הפוקוס ומודדת עומק לכל פיקסל, ואז מרנדרת בוקה אופטי. אחרי הצילום: צמצם, מיקוד ואופי עדשה.",
+                    Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2)
+                Row(Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    app.obscura.camera.depth.BokehShape.entries.forEach { sh -> Chip(sh.label, s.bokehShape == sh) { a.selectBokehShape(sh) } }
+                }
+            }
+            Mode.MACRO -> {
+                Txt("התקרב עד 10 ס״מ. הפוקוס עובר דרך כמה מישורים והם מתמזגים: הכול חד, מהקדמי עד האחורי.",
+                    Ob.LabelHe.copy(color = Ob.Ash, fontWeight = FontWeight.Normal), maxLines = 2)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("מישורים", Ob.LabelHe.copy(color = Ob.Ivory))
+                    listOf(6, 10, 14).forEach { n -> Chip(ltr("$n"), s.macroPlanes == n) { a.setMacroPlanes(n) } }
+                }
+            }
             else -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Txt(
@@ -364,17 +392,19 @@ fun ModeStrip(s: CameraUiState, a: CameraActions, modifier: Modifier = Modifier)
     val haptic = LocalHapticFeedback.current
     LazyRow(
         modifier.fillMaxWidth().height(34.dp),
-        horizontalArrangement = Arrangement.spacedBy(22.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(17.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
         contentPadding = PaddingValues(horizontal = Ob.gutter),
     ) {
         items(Mode.entries) { m ->
             val active = m == s.mode
             val color by animateColorAsState(if (active) Ob.Brass else Ob.Ash, tween(180), label = "mode")
-            Txt(
-                m.title, Ob.LabelHe.copy(fontSize = 12.5.sp, color = color, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium),
-                Modifier.press { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); a.selectMode(m) }.padding(vertical = 6.dp),
-            )
+            Row(Modifier.press { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); a.selectMode(m) }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                // Lab modes (they measure the scene and compute): a small brass mark.
+                if (m.lab) { Box(Modifier.size(4.dp).background(Ob.Brass.copy(alpha = if (active) 1f else 0.6f), CircleShape)); Spacer(Modifier.width(5.dp)) }
+                Txt(m.title, Ob.LabelHe.copy(fontSize = 12.5.sp, color = color, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium))
+            }
         }
     }
 }

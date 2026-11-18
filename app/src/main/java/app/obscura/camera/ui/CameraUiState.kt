@@ -23,8 +23,11 @@ const val BULB = -1L
 const val AUTO = -2L
 
 /** Capture modes. Every mode except PHOTO runs on the time engine. */
-enum class Mode(val title: String, val time: Boolean, val durations: List<Long>, val defaultDuration: Long) {
+enum class Mode(val title: String, val time: Boolean, val durations: List<Long>, val defaultDuration: Long, val lab: Boolean = false) {
     PHOTO("צילום", false, emptyList(), 0),
+    // The lab: modes that measure the scene (depth, focus) and compute what no lens alone can.
+    PORTRAIT("פורטרט", true, emptyList(), 0, lab = true),
+    MACRO("מאקרו", true, emptyList(), 0, lab = true),
     NIGHT("לילה", true, listOf(1000, 2000, 3000, AUTO), AUTO),
     LONG("חשיפה ארוכה", true, listOf(500, 1000, 2000, 4000, BULB, AUTO), 2000),
     PANNING("פאנינג", true, listOf(250, 500, 1000, 2000, BULB, AUTO), 500),
@@ -105,6 +108,15 @@ data class CameraUiState(
     /** Live composition coach. */
     val coachOn: Boolean = true,
     val coachTip: app.obscura.camera.coach.CompositionCoach.Tip? = null,
+    /** Portrait: the lens character chosen before the shot, and the editor after it. */
+    val bokehShape: app.obscura.camera.depth.BokehShape = app.obscura.camera.depth.BokehShape.DISC,
+    val portrait: PortraitStudio? = null,
+    /** Macro: focus planes per stack. */
+    val macroPlanes: Int = 10,
+    /** Pro sheet: hold to see the scene with every setting on automatic. */
+    val comparing: Boolean = false,
+    /** Settings sheet (display, files, advanced data). */
+    val settingsOpen: Boolean = false,
     /** Professional panel: every Camera2 control, plus the live capture result. */
     val proOpen: Boolean = false,
     val resultDump: List<Pair<String, String>> = emptyList(),
@@ -148,6 +160,15 @@ interface CameraActions {
     fun toggleComet() {}
     fun toggleZoom() {}
     fun openPro() {}
+    fun selectBokehShape(s: app.obscura.camera.depth.BokehShape) {}
+    fun setMacroPlanes(n: Int) {}
+    fun portraitFocus(x: Float, y: Float) {}
+    fun portraitParams(p: app.obscura.camera.depth.BokehParams) {}
+    fun portraitSave() {}
+    fun closePortrait() {}
+    fun compare(on: Boolean) {}
+    fun openSettings() {}
+    fun closeSettings() {}
     fun toggleSelfie() {}
     fun toggleCoach() {}
     fun setZoomBurst(on: Boolean) {}
@@ -170,6 +191,16 @@ interface CameraActions {
     fun studioSave() {}
     fun openInGallery() {}
 }
+
+/** The portrait editor: the photo with rendered bokeh, and the lens settings. */
+data class PortraitStudio(
+    val preview: ImageBitmap? = null,
+    val params: app.obscura.camera.depth.BokehParams = app.obscura.camera.depth.BokehParams(),
+    /** Depth range of the scene in diopters, for the depth view and the slider labels. */
+    val near: Float = 3f, val far: Float = 0f,
+    val rendering: Boolean = true,
+    val saving: Boolean = false,
+)
 
 /** The gallery: this app's photos, newest first, and the one being viewed. */
 data class Gallery(

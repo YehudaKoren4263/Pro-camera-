@@ -216,7 +216,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     /** Called with the small upright preview (about 96 x 128), ~5 times a second. */
     fun onPreviewPixels(px: IntArray, w: Int, h: Int) {
         val s = _state.value
-        val busy = s.capturing || s.gallery != null || s.studio != null || s.proOpen || s.sensorOpen || s.looksOpen || s.activeControl != null
+        val busy = s.capturing || s.gallery != null || s.studio != null || s.proOpen || s.sensorOpen || s.looksOpen ||
+            s.activeControl != null || s.portrait != null || s.settingsOpen
         if (!s.coachOn || busy) {
             if (s.coachTip != null) _state.update { it.copy(coachTip = null) }
             return
@@ -230,6 +231,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     override fun selectMode(mode: Mode) {
         val s = _state.value
         if (mode == s.mode || s.capturing) return
+        // Portrait wants the short tele; macro the lens that focuses closest (the main one).
+        if (!s.selfie) {
+            val target = when (mode) {
+                Mode.PORTRAIT -> s.lenses.filter { it.equivMm in 40..90 }.minByOrNull { it.equivMm }
+                Mode.MACRO -> s.lenses.maxByOrNull { l -> s.report?.cameras?.firstOrNull { it.id == (l.physicalId ?: l.cameraId) }?.minFocusDiopters ?: 0f }
+                else -> null
+            }
+            if (target != null && target.key != s.activeLensKey) {
+                _state.update { it.copy(mode = mode, zoom = ratio(target, it), activeControl = null, looksOpen = false) }
+                controller.setZoom(1f)
+                switchLens(target.key)
+                notify(if (mode == Mode.PORTRAIT) "פורטרט · ${target.equivMm}mm. המצלמה תמדוד עומק בסריקת פוקוס" else "מאקרו · ${target.equivMm}mm, הפוקוס הקרוב ביותר")
+                return
+            }
+        }
         val reopen = mode.time != s.mode.time
         _state.update { it.copy(mode = mode, activeControl = null, looksOpen = false) }
         clearDouble()
@@ -243,6 +259,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 Mode.NIGHT -> "לילה · רצף פריימים שמתמזג בלי רוחות רפאים של תנועה"
                 Mode.CLEAN -> "הסרת אנשים · עמוד יציב, מי שעובר ייעלם"
                 Mode.DOUBLE -> "חשיפה כפולה · צלם את הפריים הראשון"
+                Mode.PORTRAIT -> "פורטרט · המצלמה מודדת עומק בסריקת פוקוס. עמדו יציב שנייה"
+                Mode.MACRO -> "מאקרו · עד 10 ס״מ, הכול חד מקדימה ועד אחורה"
             },
         )
     }
@@ -319,6 +337,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
                 if (!s.mode.time) notify("אין RAW בעדשה הזו: צבעי המכשיר")
             }
             Mode.DOUBLE -> shootDouble()
+            Mode.PORTRAIT -> shootPortrait(s)
+            Mode.MACRO -> shootMacro(s)
             else -> recordTime(s)
         }
     }
@@ -329,6 +349,183 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
      * The photo: RAW frames developed by us (no maker colour, tone or sharpening), then for
      * 50 MP merged with sub-pixel super-resolution. Hand shake between frames is the detail.
      */
+    // ---- Portrait: depth from focus + optical bokeh ---------------------------------------------
+
+    private var portraitFull: YuvFrame? = null
+    private var portraitDepth: app.obscura.camera.depth.Plane? = null
+    private var portraitPreview: IntArray? = null
+    private var portraitPreviewDepth: app.obscura.camera.depth.Plane? = null
+    private var portraitPw = 0; private var portraitPh = 0
+    private var portraitJob: Job? = null
+
+    /** Focus distances to sweep: far to near, bounded by the lens's closest focus. */
+    private fun portraitTargets(minD: Float) = listOf(0f, 0.25f, 0.5f, 0.8f, 1.2f, 1.7f, 2.4f, 3.3f).filter { it <= minD + 0.01f }
+
+    private fun shootPortrait(s: CameraUiState) {
+        val minD = controller.minFocusDiopters
+        if (minD <= 0f) { notify("לעדשה הזו אין פוקוס. בחר עדשה אחרת"); return }
+        val k = 8
+        val planes = ArrayList<Pair<Float, app.obscura.camera.depth.Plane>>()
+        var full: YuvFrame? = null
+        _state.update { it.copy(capturing = true, busyText = "מודד עומק · לא לזוז", progress = 0f) }
+        val targets = portraitTargets(minD)
+        controller.focusSweep(targets, sink = { frame, d, i ->
+            if (i == 0) full = frame
+            planes += d to app.obscura.camera.depth.Plane.luma(frame, k)
+            _state.update { it.copy(progress = (i + 1f) / (targets.size + 1)) }
+        }) { stats ->
+            val f = full
+            if (f == null || planes.size < 4) {
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify("סריקת הפוקוס לא הושלמה. נסה שוב, ביציבות"); return@focusSweep
+            }
+            try {
+                _state.update { it.copy(busyText = "מחשב מפת עומק", progress = null) }
+                val ref = planes[0].second
+                val sorted = planes.sortedBy { it.first }
+                val sharp = sorted.map { (_, p) -> app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(p), app.obscura.camera.depth.FocusStack.align(ref, p)) }
+                val depth = app.obscura.camera.depth.FocusStack.depth(sharp, sorted.map { it.first }, ref).depth.rotate(stats.orientation)
+                val upright = FrameOps.rotate(f, stats.orientation)
+                portraitFull = upright; portraitDepth = depth
+                // The subject: what autofocus chose, i.e. the depth at the centre of attention.
+                val tap = s.focusPoint ?: Offset(0.5f, 0.45f)
+                val focus = depth.bilinear(tap.x * depth.w, tap.y * depth.h)
+                val near = depth.v.maxOrNull() ?: 3f; val far = depth.v.minOrNull() ?: 0f
+                // Preview: about 400 px wide, rendered live while the sliders move.
+                val pw = 400; val ph = pw * upright.h / upright.w
+                val bmp = YuvImages.toBitmap(upright, 0, null, step = (upright.w / pw).coerceAtLeast(1))
+                val small = Bitmap.createScaledBitmap(bmp, pw, ph, true); bmp.recycle()
+                val px = IntArray(pw * ph); small.getPixels(px, 0, pw, 0, 0, pw, ph); small.recycle()
+                portraitPreview = px; portraitPw = pw; portraitPh = ph
+                portraitPreviewDepth = depth.resize(pw, ph)
+                val params = app.obscura.camera.depth.BokehParams(fNumber = 1.4f, focus = focus, shape = _state.value.bokehShape)
+                _state.update { it.copy(capturing = false, busyText = null, portrait = PortraitStudio(params = params, near = near, far = far)) }
+                renderPortrait()
+                if (abs(near - far) < 0.4f) notify("לא נמדד הבדל עומק גדול. התקרב לנושא (עד 2 מ׳) לבוקה חזק")
+            } catch (e: OutOfMemoryError) {
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify("אין מספיק זיכרון לפורטרט")
+            }
+        }
+    }
+
+    private fun renderPortrait() {
+        portraitJob?.cancel()
+        portraitJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(30)
+            val px = portraitPreview ?: return@launch; val d = portraitPreviewDepth ?: return@launch
+            val st = _state.value.portrait ?: return@launch
+            _state.update { s -> s.portrait?.let { s.copy(portrait = it.copy(rendering = true)) } ?: s }
+            val p = st.params
+            val out = if (p.showDepth) app.obscura.camera.depth.Bokeh.depthImage(d, st.near, st.far)
+                else app.obscura.camera.depth.Bokeh.render(px, portraitPw, portraitPh, d, p, rMax = portraitPw * 0.06f, nSamples = 130)
+            if (!isActive) return@launch
+            val bmp = Bitmap.createBitmap(out, portraitPw, portraitPh, Bitmap.Config.ARGB_8888)
+            _state.update { s -> s.portrait?.let { s.copy(portrait = it.copy(preview = bmp.asImageBitmap(), rendering = false)) } ?: s }
+        }
+    }
+
+    override fun selectBokehShape(s: app.obscura.camera.depth.BokehShape) {
+        _state.update { it.copy(bokehShape = s) }
+        _state.value.portrait?.let { portraitParams(it.params.copy(shape = s)) }
+    }
+    override fun setMacroPlanes(n: Int) = _state.update { it.copy(macroPlanes = n) }
+
+    override fun portraitFocus(x: Float, y: Float) {
+        val d = portraitPreviewDepth ?: return
+        val st = _state.value.portrait ?: return
+        val p = st.params
+        portraitParams(if (p.miniature) p.copy(bandY = y) else p.copy(focus = d.bilinear(x * d.w, y * d.h)))
+    }
+
+    override fun portraitParams(p: app.obscura.camera.depth.BokehParams) {
+        _state.update { s -> s.portrait?.let { s.copy(portrait = it.copy(params = p), bokehShape = p.shape) } ?: s }
+        renderPortrait()
+    }
+
+    override fun closePortrait() {
+        portraitJob?.cancel()
+        portraitFull = null; portraitDepth = null; portraitPreview = null; portraitPreviewDepth = null
+        _state.update { it.copy(portrait = null) }
+    }
+
+    override fun portraitSave() {
+        val full = portraitFull ?: return; val depth = portraitDepth ?: return
+        val st = _state.value.portrait ?: return
+        _state.update { s -> s.portrait?.let { s.copy(portrait = it.copy(saving = true)) } ?: s }
+        viewModelScope.launch(Dispatchers.Default) {
+            val look = _state.value.look
+            val p = st.params.copy(showDepth = false)
+            saveComputed("פורטרט", "Obscura portrait · depth from focus · ${p.shape.name.lowercase()} · f/${p.fNumber}") {
+                // Bokeh at quarter size (where blur lives), the sharp photo at full size.
+                val sw = full.w / 4; val sh = full.h / 4
+                val smallBmp = YuvImages.toBitmap(full, 0, null, step = 4)
+                val small = IntArray(sw * sh); smallBmp.getPixels(small, 0, sw, 0, 0, sw, sh); smallBmp.recycle()
+                val d = depth.resize(sw, sh)
+                val bokeh = app.obscura.camera.depth.Bokeh.render(small, sw, sh, d, p, rMax = sw * 0.06f)
+                val radius = app.obscura.camera.depth.Plane(sw, sh, FloatArray(sw * sh) { i ->
+                    minOf(sw * 0.06f, app.obscura.camera.depth.Bokeh.radius(d.v[i], p, sw, (i / sw + 0.5f) / sh)) })
+                val out = Bitmap.createBitmap(full.w, full.h, Bitmap.Config.ARGB_8888)
+                val lk = look.takeUnless { it.isNeutral }
+                app.obscura.camera.time.Render.rows(full, 0, null) { y, row ->
+                    app.obscura.camera.depth.Bokeh.composite(row, bokeh, sw, sh, radius, y, full.w, full.h, 4f)
+                    if (lk != null) for (x in row.indices) row[x] = app.obscura.camera.camera.LookFx.apply(row[x], x, y, full.w, full.h, lk)
+                    out.setPixels(row, 0, full.w, 0, y, full.w, 1)
+                }
+                out
+            }
+            closePortrait()
+        }
+    }
+
+    // ---- Macro: focus stacking -----------------------------------------------------------------
+
+    private fun shootMacro(s: CameraUiState) {
+        val minD = controller.minFocusDiopters
+        if (minD <= 0f) { notify("לעדשה הזו אין פוקוס. בחר עדשה אחרת"); return }
+        val k = 8
+        val n = s.macroPlanes
+        // From the closest focus out to a third of it: a few centimetres of depth, all sharp.
+        val targets = List(n) { i -> minD * (1f - 0.7f * i / (n - 1f)) }
+        var ref: app.obscura.camera.depth.Plane? = null
+        var merger: app.obscura.camera.depth.FocusStack.Merger? = null
+        var oom = false
+        _state.update { it.copy(capturing = true, busyText = "סורק $n מישורי פוקוס", progress = 0f) }
+        controller.focusSweep(targets, sink = { frame, _, i ->
+            if (oom) return@focusSweep
+            try {
+                val small = app.obscura.camera.depth.Plane.luma(frame, k)
+                val r = ref ?: small.also { ref = it }
+                val m = merger ?: app.obscura.camera.depth.FocusStack.Merger(frame.w, frame.h, k).also { merger = it }
+                val wp = app.obscura.camera.depth.FocusStack.align(r, small)
+                m.add(frame, app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(small), wp), wp)
+                _state.update { it.copy(progress = (i + 1f) / (n + 1)) }
+            } catch (e: OutOfMemoryError) { oom = true; merger = null }
+        }) { stats ->
+            val m = merger
+            if (oom || m == null || m.frames < 3) {
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify(if (oom) "אין מספיק זיכרון. נסה פחות מישורים" else "הסריקה לא הושלמה. נסה שוב"); return@focusSweep
+            }
+            _state.update { it.copy(busyText = "ממזג ${m.frames} מישורים", progress = null) }
+            val look = _state.value.look
+            saveComputed("מאקרו", "Obscura macro · focus stack · ${m.frames} planes") { YuvImages.toBitmap(m.result(), stats.orientation, look) }
+            merger = null
+        }
+    }
+
+    // ---- Pro sheet helpers ---------------------------------------------------------------------
+
+    /** Hold to compare: the camera runs fully automatic until released. */
+    override fun compare(on: Boolean) {
+        _state.update { it.copy(comparing = on) }
+        val s = _state.value
+        controller.update(if (on) app.obscura.camera.camera.ManualSettings() else s.settings, if (on) false else s.natural)
+    }
+
+    override fun openSettings() { controller.dumpResults = true; _state.update { it.copy(settingsOpen = true, activeControl = null, looksOpen = false) } }
+    override fun closeSettings() { controller.dumpResults = false; _state.update { it.copy(settingsOpen = false) } }
+
     private fun shootRaw(s: CameraUiState) {
         val n = if (s.hiRes) s.burstFrames else 1
         val crop = controller.zoomRatio
@@ -386,10 +583,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
     // ---- Pro panel -----------------------------------------------------------------------------
 
     override fun openPro() {
-        controller.dumpResults = true
         _state.update { it.copy(proOpen = true, activeControl = null, looksOpen = false) }
     }
-    override fun closePro() { controller.dumpResults = false; _state.update { it.copy(proOpen = false) } }
+    override fun closePro() { if (_state.value.comparing) compare(false); _state.update { it.copy(proOpen = false) } }
     override fun proSettings(settings: app.obscura.camera.camera.ManualSettings) { _state.update { it.copy(settings = settings) }; pushSettings() }
     override fun resetPro() {
         _state.update { it.copy(settings = app.obscura.camera.camera.ManualSettings(), burstFrames = 8, jpegQuality = 96, natural = true, hiRes = true) }

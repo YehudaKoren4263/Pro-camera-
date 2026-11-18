@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed (monochrome) icon: the same aperture, single colour. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M62.23,58.75 L54.00,63.50 L45.77,58.75 L45.77,49.25 L54.00,44.50 L62.23,49.25 Z" android:fillColor="#FFFFFFFF" />
+    <path android:pathData="M62.23,58.75 L37.67,72.93 M54.00,63.50 L29.44,49.32 M45.77,58.75 L45.77,30.39 M45.77,49.25 L70.33,35.07 M54.00,44.50 L78.56,58.68 M62.23,49.25 L62.23,77.61" android:strokeWidth="2.2" android:strokeLineCap="round" android:strokeColor="#FFFFFFFF" />
+    <path android:pathData="M29.0,54.0 a25.0,25.0 0 1,0 50.0,0 a25.0,25.0 0 1,0 -50.0,0" android:strokeWidth="2.6" android:strokeColor="#FFFFFFFF" />
+</vector>

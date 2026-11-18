@@ -38,6 +38,9 @@ import app.obscura.camera.ui.components.TimePanel
 import app.obscura.camera.ui.components.StudioPanel
 import app.obscura.camera.ui.components.GalleryPanel
 import app.obscura.camera.ui.components.ProPanel
+import app.obscura.camera.ui.components.SettingsPanel
+import app.obscura.camera.ui.components.PortraitPanel
+import androidx.compose.runtime.remember
 import app.obscura.camera.ui.components.CoachToast
 import app.obscura.camera.ui.components.CoachTarget
 import app.obscura.camera.ui.components.FlipButton
@@ -83,8 +86,19 @@ fun CameraScreen(s: CameraUiState, a: CameraActions, preview: @Composable (Modif
         AnimatedVisibility(visible = s.gallery != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
             s.gallery?.let { GalleryPanel(it, a) }
         }
-        AnimatedVisibility(visible = s.proOpen, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+        // The pro sheet covers only the bottom: the viewfinder above shows every change live.
+        AnimatedVisibility(visible = s.proOpen, modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 3 },
+            exit = fadeOut(tween(180)) + slideOutVertically(tween(220)) { it / 3 }) {
             ProPanel(s, a)
+        }
+        AnimatedVisibility(visible = s.settingsOpen, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            val version = remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "" }
+            SettingsPanel(s, a, version)
+        }
+        AnimatedVisibility(visible = s.portrait != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
+            s.portrait?.let { PortraitPanel(it, a) }
         }
         AnimatedVisibility(visible = s.studio != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(160))) {
             s.studio?.let { StudioPanel(it, a) }

@@ -187,7 +187,7 @@ class ScreenSnapshotTest {
     }
 
     @Test fun proPanel() = shot(base.copy(
-        proOpen = true,
+        proOpen = true, frontLens = front,
         settings = ManualSettings(kelvin = 5200, tint = 2, metering = app.obscura.camera.camera.Metering.SPOT, edge = 0),
         resultDump = listOf(
             "android.sensor.exposureTime" to "4000000", "android.sensor.sensitivity" to "160",
@@ -218,4 +218,37 @@ class ScreenSnapshotTest {
 
     @Test fun zoomBurstPanning() = shot(base.copy(frontLens = front, mode = Mode.PANNING, zoomBurst = true, rawActive = false, jpegMp = 12.6f,
         focusPoint = androidx.compose.ui.geometry.Offset(0.5f, 0.55f)))
+
+    @Test fun portraitMode() = shot(base.copy(frontLens = front, mode = Mode.PORTRAIT, activeLensKey = "4", activeInfo = cameras[4], zoom = 2.1f,
+        bokehShape = app.obscura.camera.depth.BokehShape.SWIRL, rawActive = false, jpegMp = 12.6f))
+
+    @Test fun macroMode() = shot(base.copy(frontLens = front, mode = Mode.MACRO, rawActive = false, jpegMp = 12.6f))
+
+    @Test fun settings() = shot(base.copy(frontLens = front, settingsOpen = true))
+
+    @Test fun portraitStudio() {
+        // A person-shaped subject in front of night city lights, rendered by the real bokeh engine.
+        val w = 300; val h = 400
+        val depth = app.obscura.camera.depth.Plane(w, h); val px = IntArray(w * h)
+        val rnd = java.util.Random(4)
+        val lights = List(26) { Triple(rnd.nextInt(w), rnd.nextInt(h * 2 / 3), rnd.nextInt(3)) }
+        for (y in 0 until h) for (x in 0 until w) {
+            val i = y * w + x
+            val head = kotlin.math.hypot(x - 150f, y - 170f) < 46f
+            val body = y > 210 && kotlin.math.abs(x - 150) < 90 - (400 - y) / 6
+            val subj = head || body
+            depth.v[i] = if (subj) 1.6f else 0.1f
+            val light = lights.firstOrNull { (lx, ly, _) -> kotlin.math.hypot(x - lx.toFloat(), y - ly.toFloat()) < 2.2f }
+            px[i] = when {
+                head -> 0xFFC99A7C.toInt()
+                body -> 0xFF2A2E3A.toInt()
+                light != null -> intArrayOf(0xFFFFE0A8.toInt(), 0xFFFFB866.toInt(), 0xFFB8D4FF.toInt())[light.third]
+                else -> (0xFF shl 24) or ((22 + y / 20) shl 16) or ((24 + y / 22) shl 8) or (40 + y / 14)
+            }
+        }
+        val p = app.obscura.camera.depth.BokehParams(fNumber = 1.2f, focus = 1.6f, shape = app.obscura.camera.depth.BokehShape.DISC, highlights = 0.8f)
+        val out = app.obscura.camera.depth.Bokeh.render(px, w, h, depth, p)
+        val bmp = android.graphics.Bitmap.createBitmap(out, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        shot(base.copy(portrait = app.obscura.camera.ui.PortraitStudio(bmp.asImageBitmap(), p, 1.6f, 0.1f, rendering = false)))
+    }
 }

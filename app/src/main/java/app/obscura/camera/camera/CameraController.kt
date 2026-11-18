@@ -294,6 +294,7 @@ class CameraController(private val context: Context, private val listener: Liste
         runCatching { previewSurface?.release() }; previewSurface = null
         pending?.raw?.close(); pending = null
         rawBurst?.let { rb -> rawBurst = null; endBurst(rb) }
+        sweep?.let { endSweep(it) }
         tapRegion = null
     }
 
@@ -349,9 +350,11 @@ class CameraController(private val context: Context, private val listener: Liste
             val b = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             previewSurface?.let { b.addTarget(it) }
             val rec = recording
-            if (rec != null && !rec.single) yuvReader?.let { b.addTarget(it.surface) }
+            if ((rec != null && !rec.single) || sweep != null) yuvReader?.let { b.addTarget(it.surface) }
             apply(b)
-            if (rec != null) {
+            val sw = sweep
+            // Exposure and colour lock from the second sweep frame on: depth must not see flicker.
+            if (rec != null || (sw != null && sw.index >= 0)) {
                 // One exposure and one colour balance for the whole stack.
                 b.set(CaptureRequest.CONTROL_AE_LOCK, true)
                 b.set(CaptureRequest.CONTROL_AWB_LOCK, true)
@@ -417,9 +420,9 @@ class CameraController(private val context: Context, private val listener: Liste
 
         val afModes = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet() ?: emptySet()
         val minFocus = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        val focus = settings.focusDiopters
+        val focus = sweepFocus ?: settings.focusDiopters
         when {
-            focus != null && minFocus > 0f && manualSensor -> {
+            focus != null && minFocus > 0f && (manualSensor || sweepFocus != null) -> {
                 b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
                 b.set(CaptureRequest.LENS_FOCUS_DISTANCE, focus.coerceIn(0f, minFocus))
             }
@@ -482,6 +485,7 @@ class CameraController(private val context: Context, private val listener: Liste
             val now = SystemClock.elapsedRealtime()
             if (now - lastReadoutAt < 120) return
             lastReadoutAt = now
+            sweep?.let { sw -> sweepResult(sw, result) }
             if (dumpResults && now - lastDumpAt > 500) { lastDumpAt = now; listener.onResultDump(dump(result)) }
             val af = result.get(CaptureResult.CONTROL_AF_STATE)
             listener.onReadout(
@@ -551,6 +555,7 @@ class CameraController(private val context: Context, private val listener: Liste
 
     private fun onYuv(r: ImageReader) {
         val img = r.acquireNextImage() ?: return
+        sweep?.let { sw -> sweepFrame(sw, img); return }
         val rec = recording
         if (rec == null || rec.stopped) { img.close(); return }
         if (rec.inFlight.get() >= 2) { rec.dropped++; img.close(); return }
@@ -564,6 +569,74 @@ class CameraController(private val context: Context, private val listener: Liste
         }
         if (rec.single) finish(rec)
     }
+
+    // ---- Focus sweep: depth from focus and macro stacking -------------------------------------
+
+    private class Sweep(val targets: List<Float>, val sink: (YuvFrame, Float, Int) -> Unit, val onDone: (BurstStats) -> Unit) {
+        /** -1: the autofocus frame (as the camera focused it), then each target in turn. */
+        var index = -1
+        var framesSinceSet = 0
+        var readyTs: Long? = null
+        var readyFocus = 0f
+        var delivered = 0
+    }
+    private var sweep: Sweep? = null
+    private var sweepFocus: Float? = null
+
+    /**
+     * One frame at the autofocus distance, then one frame at each of [diopters] with the lens
+     * settled there (exposure and colour locked). [sink] gets (frame, focus distance, index).
+     */
+    fun focusSweep(diopters: List<Float>, sink: (YuvFrame, Float, Int) -> Unit, onDone: (BurstStats) -> Unit) = handler.post {
+        if (!timeSession || session == null || yuvReader == null || recording != null || sweep != null) {
+            listener.onError("המצלמה עוד לא מוכנה למצב הזה"); return@post
+        }
+        val sw = Sweep(diopters, sink, onDone)
+        sweep = sw; sweepFocus = null
+        startRepeating()
+        listener.onShutter()
+        handler.postDelayed({ if (sweep === sw) endSweep(sw) }, 9000)
+    }
+
+    private fun sweepResult(sw: Sweep, result: CaptureResult) {
+        if (sw.readyTs != null) return
+        sw.framesSinceSet++
+        val state = result.get(CaptureResult.LENS_STATE)
+        val fd = result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: return
+        val target = sweepFocus
+        val stationary = state == null || state == CaptureResult.LENS_STATE_STATIONARY
+        val onTarget = target == null || abs(fd - target) < 0.12f + 0.06f * target
+        // Settled (or waited long enough): the next frame from this request on is the one.
+        if ((stationary && onTarget && sw.framesSinceSet >= 2) || sw.framesSinceSet > 12) {
+            sw.readyTs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+            sw.readyFocus = target ?: fd
+        }
+    }
+
+    private fun sweepFrame(sw: Sweep, img: Image) {
+        val ready = sw.readyTs
+        if (ready == null || img.timestamp < ready) { img.close(); return }
+        val frame = try { YuvImages.copy(img) } catch (e: Exception) { null } finally { img.close() }
+        if (frame != null) {
+            val i = sw.delivered++; val f = sw.readyFocus
+            processor.execute { try { sw.sink(frame, f, i) } catch (e: Throwable) { Log.e(TAG, "sweep sink", e) } }
+        }
+        sw.index++
+        if (sw.index >= sw.targets.size) { endSweep(sw); return }
+        sweepFocus = sw.targets[sw.index]; sw.framesSinceSet = 0; sw.readyTs = null
+        startRepeating()
+    }
+
+    private fun endSweep(sw: Sweep) {
+        if (sweep !== sw) return
+        sweep = null; sweepFocus = null
+        startRepeating()
+        val stats = BurstStats(sw.delivered, 0, jpegOrientation())
+        processor.execute { sw.onDone(stats) }
+    }
+
+    /** Closest focus of the open lens, in diopters (0 = fixed focus). */
+    val minFocusDiopters get() = characteristics?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
 
     private fun finish(rec: Recording) {
         if (recording !== rec) return
