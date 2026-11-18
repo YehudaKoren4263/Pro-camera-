@@ -2,7 +2,7 @@ package app.obscura.camera.camera
 
 /** Where a look sits in the picker. */
 enum class LookCategory(val title: String) {
-    NATURAL("טבעי"), NEGATIVE("פילם צבע"), SLIDE("שקופית"), CAMERA("מצלמות"), CINEMA("קולנוע"), MONO("שחור-לבן"),
+    NATURAL("טבעי"), CAMERA("מצלמות"), NEGATIVE("פילם צבע"), SLIDE("שקופית"), INSTANT("אינסטנט"), CINEMA("קולנוע"), MONO("שחור-לבן"),
 }
 
 /**
@@ -17,9 +17,11 @@ class Look(
     val note: String,
     val category: LookCategory,
     val spec: LookSpec,
+    /** A measured film LUT in resources/luts (FilmLooks); otherwise the recipe is baked. */
+    val lutResource: String? = null,
 ) {
     val isNeutral get() = id == "neutral"
-    val lut: Lut by lazy { LookEngine.bake(spec) }
+    val lut: Lut by lazy { lutResource?.let(LutFiles::load) ?: LookEngine.bake(spec) }
     val fallbackMatrix: FloatArray by lazy { LookEngine.fitMatrix(lut) }
 
     /** Skin, sky, foliage, red and grey pushed through the look: an honest preview. */
@@ -132,9 +134,27 @@ object Looks {
         LookSpec(mono = listOf(0.30f, 0.59f, 0.11f), contrast = 0.15f, blacks = 0.025f, whites = 0.97f,
             shadowTint = listOf(0.035f, -0.008f, 0.05f), highlightTint = listOf(0.06f, 0.035f, -0.005f), grain = 0.3f))
 
-    val ALL = listOf(
+    /** Our own recipes (always available) followed by the measured film LUTs. */
+    val RECIPES = listOf(
         NEUTRAL, MEDIUM, IVORY, AMBER, VERDE, CHROMA, PASTEL, SLIDE, SLIDE100, CHROME64,
         REPORTAGE, STREET_NEG, NOSTALGIA, RANGEFINDER, POSITIVE, CINEMA, TUNGSTEN, BLEACH, CROSS,
         SILVER, MONO_RED, NOIR, SELENIUM,
     )
+    val ALL: List<Look> = RECIPES + FilmLooks.ALL
+}
+
+/** Reads the OBL1 LUT files written by tools/import_film_luts.py from Java resources. */
+object LutFiles {
+    fun load(id: String): Lut {
+        val bytes = (LutFiles::class.java.getResourceAsStream("/luts/$id.lut") ?: error("missing LUT $id")).use { it.readBytes() }
+        require(bytes.size > 5 && String(bytes, 0, 4, Charsets.US_ASCII) == "OBL1") { "bad LUT $id" }
+        val n = bytes[4].toInt() and 0xFF
+        val data = FloatArray(n * n * n * 3)
+        require(bytes.size == 5 + data.size * 2) { "truncated LUT $id" }
+        for (i in data.indices) {
+            val hi = bytes[5 + 2 * i].toInt() and 0xFF; val lo = bytes[6 + 2 * i].toInt() and 0xFF
+            data[i] = ((hi shl 8) or lo) / 65535f
+        }
+        return Lut(n, data)
+    }
 }

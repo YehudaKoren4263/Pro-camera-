@@ -1,0 +1,416 @@
+[
+ {
+  "id": "fx_classic_chrome",
+  "name": "Fuji Classic Chrome",
+  "note": "הדמיית המצלמה: דוקומנטרי, צבע מאופק, כחול קר.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_classic_chrome.cube"
+ },
+ {
+  "id": "fx_velvia",
+  "name": "Fuji Velvia",
+  "note": "הדמיית המצלמה: רוויה של שקופית נוף.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_velvia.cube"
+ },
+ {
+  "id": "fx_provia",
+  "name": "Fuji Provia",
+  "note": "הדמיית המצלמה: הסטנדרט, נקי ונאמן.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_provia.cube"
+ },
+ {
+  "id": "fx_astia",
+  "name": "Fuji Astia",
+  "note": "הדמיית המצלמה: רכה, עור עדין.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_astia.cube"
+ },
+ {
+  "id": "fx_pro_neg_hi",
+  "name": "Fuji Pro Neg Hi",
+  "note": "הדמיית המצלמה: נגטיב סטודיו עם ניגוד.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_pro_neg_hi.cube"
+ },
+ {
+  "id": "fx_pro_neg_std",
+  "name": "Fuji Pro Neg Std",
+  "note": "הדמיית המצלמה: נגטיב סטודיו רך ושטוח.",
+  "category": "CAMERA",
+  "grain": 0.0,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_pro_neg_std.cube"
+ },
+ {
+  "id": "portra400",
+  "name": "Kodak Portra 400",
+  "note": "האגדה של הפורטרטים: עור חם, טונים רכים.",
+  "category": "NEGATIVE",
+  "grain": 0.25,
+  "vignette": 0.0,
+  "source": "negative_new/kodak_portra_400.cube"
+ },
+ {
+  "id": "portra160",
+  "name": "Kodak Portra 160",
+  "note": "פורטרה עדין: גרעין דק, פסטלי.",
+  "category": "NEGATIVE",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "negative_new/kodak_portra_160.cube"
+ },
+ {
+  "id": "portra800",
+  "name": "Kodak Portra 800",
+  "note": "פורטרה לילה: חם, ניגוד גבוה יותר.",
+  "category": "NEGATIVE",
+  "grain": 0.35,
+  "vignette": 0.0,
+  "source": "negative_new/kodak_portra_800.cube"
+ },
+ {
+  "id": "ektar100",
+  "name": "Kodak Ektar 100",
+  "note": "נגטיב רווי וחד: צבע עז, גרעין עדין.",
+  "category": "NEGATIVE",
+  "grain": 0.12,
+  "vignette": 0.0,
+  "source": "negative_color/kodak_ektar_100.cube"
+ },
+ {
+  "id": "fuji400h",
+  "name": "Fuji Pro 400H",
+  "note": "אוורירי וטורקיז, אהוב בחתונות.",
+  "category": "NEGATIVE",
+  "grain": 0.25,
+  "vignette": 0.0,
+  "source": "negative_new/fuji_400h.cube"
+ },
+ {
+  "id": "fuji160c",
+  "name": "Fuji Pro 160C",
+  "note": "נקי ורווי במעט, ירוקים חיים.",
+  "category": "NEGATIVE",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "negative_new/fuji_160c.cube"
+ },
+ {
+  "id": "fuji800z",
+  "name": "Fuji Pro 800Z",
+  "note": "חם וגרעיני, לאור חלש.",
+  "category": "NEGATIVE",
+  "grain": 0.35,
+  "vignette": 0.0,
+  "source": "negative_new/fuji_800z.cube"
+ },
+ {
+  "id": "superia400",
+  "name": "Fuji Superia 400",
+  "note": "הנגטיב היומיומי: ירוקים קרירים.",
+  "category": "NEGATIVE",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "negative_old/fuji_superia_400.cube"
+ },
+ {
+  "id": "superia800",
+  "name": "Fuji Superia X-Tra 800",
+  "note": "גרעיני ורווי, אווירת שנות ה-2000.",
+  "category": "NEGATIVE",
+  "grain": 0.4,
+  "vignette": 0.0,
+  "source": "negative_color/fuji_superia_x-tra_800.cube"
+ },
+ {
+  "id": "vista200",
+  "name": "Agfa Vista 200",
+  "note": "אדומים חמים, נוסטלגיה אירופית.",
+  "category": "NEGATIVE",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "negative_color/agfa_vista_200.cube"
+ },
+ {
+  "id": "elite400",
+  "name": "Kodak Elite Color 400",
+  "note": "צרכני חם ורווי.",
+  "category": "NEGATIVE",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "negative_color/kodak_elite_color_400.cube"
+ },
+ {
+  "id": "redscale",
+  "name": "Lomography Redscale",
+  "note": "נגטיב הפוך: הכול אדום-כתום.",
+  "category": "NEGATIVE",
+  "grain": 0.35,
+  "vignette": 0.15,
+  "source": "negative_color/lomography_redscale_100.cube"
+ },
+ {
+  "id": "velvia50",
+  "name": "Fuji Velvia 50",
+  "note": "השקופית של צלמי הנוף: רוויה קיצונית.",
+  "category": "SLIDE",
+  "grain": 0.1,
+  "vignette": 0.0,
+  "source": "colorslide/fuji_velvia_50.cube"
+ },
+ {
+  "id": "provia100f",
+  "name": "Fuji Provia 100F",
+  "note": "שקופית מאוזנת ונאמנה.",
+  "category": "SLIDE",
+  "grain": 0.1,
+  "vignette": 0.0,
+  "source": "colorslide/fuji_provia_100f.cube"
+ },
+ {
+  "id": "astia100f",
+  "name": "Fuji Astia 100F",
+  "note": "שקופית רכה לפורטרטים.",
+  "category": "SLIDE",
+  "grain": 0.1,
+  "vignette": 0.0,
+  "source": "colorslide/fuji_astia_100f.cube"
+ },
+ {
+  "id": "kodachrome64",
+  "name": "Kodak Kodachrome 64",
+  "note": "הקלאסיקה: אדומים חמים, כחולים עמוקים.",
+  "category": "SLIDE",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "colorslide/kodak_kodachrome_64.cube"
+ },
+ {
+  "id": "kodachrome25",
+  "name": "Kodak Kodachrome 25",
+  "note": "קודכרום עדין וחד.",
+  "category": "SLIDE",
+  "grain": 0.08,
+  "vignette": 0.0,
+  "source": "colorslide/kodak_kodachrome_25.cube"
+ },
+ {
+  "id": "ektachrome_vs",
+  "name": "Kodak Ektachrome 100 VS",
+  "note": "שקופית רוויה וקרירה.",
+  "category": "SLIDE",
+  "grain": 0.1,
+  "vignette": 0.0,
+  "source": "colorslide/kodak_ektachrome_100_vs.cube"
+ },
+ {
+  "id": "elitechrome400",
+  "name": "Kodak Elite Chrome 400",
+  "note": "שקופית צרכנית גרעינית.",
+  "category": "SLIDE",
+  "grain": 0.25,
+  "vignette": 0.0,
+  "source": "colorslide/kodak_elite_chrome_400.cube"
+ },
+ {
+  "id": "precisa100",
+  "name": "Agfa Precisa 100",
+  "note": "שקופית אירופית קרירה.",
+  "category": "SLIDE",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "colorslide/agfa_precisa_100.cube"
+ },
+ {
+  "id": "xpro200",
+  "name": "Lomography X-Pro 200",
+  "note": "פיתוח צולב: צהוב-ירוק וכחול.",
+  "category": "SLIDE",
+  "grain": 0.3,
+  "vignette": 0.2,
+  "source": "colorslide/lomography_x-pro_slide_200.cube"
+ },
+ {
+  "id": "polaroid669",
+  "name": "Polaroid 669",
+  "note": "אינסטנט פילינג: דהוי וחם.",
+  "category": "INSTANT",
+  "grain": 0.2,
+  "vignette": 0.25,
+  "source": "instant_pro/polaroid_669.cube"
+ },
+ {
+  "id": "polaroid690",
+  "name": "Polaroid 690",
+  "note": "אינסטנט רווי, ניגוד בינוני.",
+  "category": "INSTANT",
+  "grain": 0.2,
+  "vignette": 0.25,
+  "source": "instant_pro/polaroid_690.cube"
+ },
+ {
+  "id": "polachrome",
+  "name": "Polaroid Polachrome",
+  "note": "שקופית אינסטנט נדירה, צבעים דחוסים.",
+  "category": "INSTANT",
+  "grain": 0.25,
+  "vignette": 0.2,
+  "source": "colorslide/polaroid_polachrome.cube"
+ },
+ {
+  "id": "px70",
+  "name": "Polaroid PX-70",
+  "note": "אינסטנט מודרני: עמום וחלומי.",
+  "category": "INSTANT",
+  "grain": 0.2,
+  "vignette": 0.3,
+  "source": "instant_consumer/polaroid_px-70.cube"
+ },
+ {
+  "id": "px680",
+  "name": "Polaroid PX-680",
+  "note": "אינסטנט מודרני חם.",
+  "category": "INSTANT",
+  "grain": 0.2,
+  "vignette": 0.3,
+  "source": "instant_consumer/polaroid_px-680.cube"
+ },
+ {
+  "id": "fp100c",
+  "name": "Fuji FP-100C",
+  "note": "אינסטנט פילינג של פוג'י: ירוקים-כחולים.",
+  "category": "INSTANT",
+  "grain": 0.2,
+  "vignette": 0.2,
+  "source": "instant_pro/fuji_fp-100c.cube"
+ },
+ {
+  "id": "kodak2383",
+  "name": "Kodak 2383 Print",
+  "note": "פילם הקרנה קולנועי: הלוק של בתי הקולנוע.",
+  "category": "CINEMA",
+  "grain": 0.15,
+  "vignette": 0.1,
+  "source": "print/kodak_2383_constlmap.cube"
+ },
+ {
+  "id": "kodak2393",
+  "name": "Kodak 2393 Print",
+  "note": "פילם הקרנה רווי וחד יותר.",
+  "category": "CINEMA",
+  "grain": 0.15,
+  "vignette": 0.1,
+  "source": "print/kodak_2393_constlmap.cube"
+ },
+ {
+  "id": "fuji3513",
+  "name": "Fuji 3513 Print",
+  "note": "פילם הקרנה של פוג'י: קריר וירקרק.",
+  "category": "CINEMA",
+  "grain": 0.15,
+  "vignette": 0.1,
+  "source": "print/fuji_3513_constlmap.cube"
+ },
+ {
+  "id": "fx_acros",
+  "name": "Fuji Acros",
+  "note": "הדמיית המצלמה: שחור-לבן עשיר.",
+  "category": "MONO",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_acros.cube"
+ },
+ {
+  "id": "fx_acros_r",
+  "name": "Fuji Acros + R",
+  "note": "עם פילטר אדום: שמיים דרמטיים.",
+  "category": "MONO",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_acros+r.cube"
+ },
+ {
+  "id": "fx_acros_ye",
+  "name": "Fuji Acros + Ye",
+  "note": "עם פילטר צהוב: ניגוד עדין בשמיים.",
+  "category": "MONO",
+  "grain": 0.3,
+  "vignette": 0.0,
+  "source": "fujixtransiii/fuji_xtrans_iii_acros+ye.cube"
+ },
+ {
+  "id": "trix400",
+  "name": "Kodak Tri-X 400",
+  "note": "הקלאסיקה של עיתונות הרחוב.",
+  "category": "MONO",
+  "grain": 0.55,
+  "vignette": 0.0,
+  "source": "negative_new/kodak_tri-x_400.cube"
+ },
+ {
+  "id": "hp5",
+  "name": "Ilford HP5 Plus 400",
+  "note": "שחור-לבן רך וגרעיני.",
+  "category": "MONO",
+  "grain": 0.5,
+  "vignette": 0.0,
+  "source": "bw/ilford_hp_5_plus_400.cube"
+ },
+ {
+  "id": "delta3200",
+  "name": "Ilford Delta 3200",
+  "note": "לילה: גרעין כבד, שחורים עמוקים.",
+  "category": "MONO",
+  "grain": 0.8,
+  "vignette": 0.1,
+  "source": "bw/ilford_delta_3200.cube"
+ },
+ {
+  "id": "tmax100",
+  "name": "Kodak T-Max 100",
+  "note": "חד ונקי, גרעין כמעט בלתי נראה.",
+  "category": "MONO",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "bw/kodak_t-max_100.cube"
+ },
+ {
+  "id": "panf50",
+  "name": "Ilford Pan F 50",
+  "note": "טונים עדינים, עור חלק.",
+  "category": "MONO",
+  "grain": 0.12,
+  "vignette": 0.0,
+  "source": "bw/ilford_pan_f_plus_50.cube"
+ },
+ {
+  "id": "ortho25",
+  "name": "Rollei Ortho 25",
+  "note": "אורתוכרומטי: אדום כהה, שמיים בהירים.",
+  "category": "MONO",
+  "grain": 0.15,
+  "vignette": 0.0,
+  "source": "bw/rollei_ortho_25.cube"
+ },
+ {
+  "id": "hie_infra",
+  "name": "Kodak HIE Infrared",
+  "note": "אינפרא-אדום: עלווה לבנה, שמיים שחורים.",
+  "category": "MONO",
+  "grain": 0.5,
+  "vignette": 0.2,
+  "source": "bw/kodak_hie_hs_infra.cube"
+ }
+]

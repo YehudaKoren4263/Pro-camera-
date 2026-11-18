@@ -12,6 +12,13 @@
 
 *צילומי המסך מרונדרים מהקומפוזבלים האמיתיים (Paparazzi), עם סצנה סינתטית במקום הזנת המצלמה.*
 
+## חדש בגרסה 0.5
+- **69 מראות ב-7 קטגוריות:**
+  - 23 מתכונים מקוריים.
+  - 46 פילמים אמיתיים מאוסף G'MIC ו-RawTherapee (MIT / CC BY-SA): ‏Fuji X-Trans III (‏Classic Chrome, ‏Velvia, ‏Provia, ‏Astia, ‏Pro Neg, ‏Acros), ‏Kodak Portra, ‏Ektar, ‏Kodachrome, ‏Fuji 400H, ‏Superia, ‏Polaroid, ‏Kodak 2383 ועוד.
+  - קרדיטים: `app/src/main/resources/luts/NOTICE.md`.
+- **מצבים חדשים:** לילה, הסרת אנשים, שובל שביט, תצוגה מצטברת חיה ומד ND.
+
 ## חדש בגרסה 0.3
 - **ממשק מלא בעברית (RTL).** מונחים טכניים נשארים באנגלית: ISO, ‏EV, ‏WB, ‏AF, ‏RAW. התמונה, החוגות וההיסטוגרמה נשארים משמאל לימין.
 - **מנוע זמן**, ברזולוציה מלאה (12.6MP ב-Xiaomi 15T), עם יישור בפירמידה, צירוף בזרימה ו-dithering נגד banding:

@@ -140,7 +140,7 @@ class ScreenSnapshotTest {
         ),
     )
 
-    @Test fun looks() = shot(base.copy(looksOpen = true, look = Looks.STREET_NEG, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f))
+    @Test fun looks() = shot(base.copy(looksOpen = true, look = app.obscura.camera.camera.FilmLooks.ALL.first { it.id == "fx_classic_chrome" }, activeLensKey = "4", activeInfo = cameras[4], rollDegrees = 4.5f))
 
     @Test fun nightMode() = shot(base.copy(mode = Mode.NIGHT, jpegMp = 12.6f, rawActive = false))
 

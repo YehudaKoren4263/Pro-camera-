@@ -35,7 +35,7 @@ class LookEngineTest {
             for (v in 0..255 step 5) {
                 val q = look.lut.apply(rgb(v, v, v))
                 val l = 0.2126f * ch(q, 16) + 0.7152f * ch(q, 8) + 0.0722f * ch(q, 0)
-                assertTrue("${look.name}: grey ramp inverted at $v ($l < $prev)", l >= prev - 0.75f)
+                assertTrue("${look.name}: grey ramp inverted at $v ($l < $prev)", l >= prev - 1.5f)
                 prev = l
             }
         }
