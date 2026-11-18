@@ -15,8 +15,8 @@ android {
         applicationId = "app.obscura.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.1.0"
+        versionCode = 13
+        versionName = "1.1.1"
     }
 
     // Release signing is read from keystore.properties (never committed). Point OBSCURA_KEYSTORE
@@ -61,6 +61,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.animation:animation")
+    // Official Material icons (Apache 2.0); R8 keeps only the ones used.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.activity:activity-compose:1.9.3")

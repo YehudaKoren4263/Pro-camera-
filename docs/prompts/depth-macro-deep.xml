@@ -1,0 +1,242 @@
+<context>
+  <project>Obscura: Android camera app in Kotlin, Jetpack Compose and Camera2, built with Gradle. Target device is a Xiaomi 15T (Dimensity 8400, Android 16). There is a project skill `android-raw-camera` under `.claude/`.</project>
+  <scope>Portrait engine (`app/src/main/java/app/obscura/camera/depth/Bokeh.kt`), macro engine (`app/src/main/java/app/obscura/camera/depth/FocusStack.kt`), capture control (`app/src/main/java/app/obscura/camera/camera/CameraController.kt`), frame helpers (`app/src/main/java/app/obscura/camera/time/FrameOps.kt`). Offline tooling can go in `tools/` or `prototype/`.</scope>
+  <current-behavior>
+    Portrait has two engines. One is the maker's live BOKEH Camera2 extension. The other is our depth-from-focus pipeline:
+    - capture an 8-frame YUV focus sweep;
+    - measure Laplacian energy at 1/8 resolution;
+    - align each frame with scale plus shift to cancel focus breathing;
+    - apply an edge-aware fill;
+    - run a scatter-as-gather bokeh at quarter resolution and composite it over the full-resolution frame.
+    Macro sweeps from closest focus outward and merges with sharpness^4 weights.
+    Both pass synthetic JVM tests. On the real phone, macro "does not really work", and portrait blur and depth look unnatural and bad.
+  </current-behavior>
+  <desired-behavior>Macro produces images with measurably more depth of field than one frame. Portrait produces blur that matches a reference on objective measures and wins a blind comparison. Every change is justified by evidence captured on the device, not by synthetic tests.</desired-behavior>
+  <device-facts>The device probe reports:
+    - camera id 5 is a MediaTek VSDOF stereo logical camera with vendor depth-map keys;
+    - LENS focus hardware is present;
+    - minimum focus distance per lens: main 10 diopters (about 10 cm), tele 2 diopters (about 50 cm), ultrawide fixed focus.
+  </device-facts>
+
+  <expert-brief>
+    What a leading computational-photography engineer would do here that was not asked for:
+    - Diagnose before tuning. Prove the sweep physically happens.
+      - Did the lens move between frames?
+      - Was each frame captured with LENS_STATE stationary?
+      - Were AF, AE, AWB and OIS locked or off?
+      - Which physical camera actually served the capture? If macro lands on the fixed-focus ultrawide, or on a logical camera that ignores LENS_FOCUS_DISTANCE, nothing downstream can work.
+    - Check LENS_INFO_FOCUS_DISTANCE_CALIBRATION. If it is UNCALIBRATED, diopter values are not physical, and the sweep spacing and depth labels are wrong.
+    - Stop treating depth-from-focus as the primary portrait depth source. Laplacian focus measures fail on textureless skin, walls and sky, which is a classic cause of "unnatural" blur.
+    - Production portrait pipelines combine three things:
+      - a person or subject segmentation matte for the subject boundary;
+      - a coarse depth source (stereo VSDOF where the vendor depth map is readable, depth-from-focus as fallback) for the background gradient;
+      - edge-aware refinement such as a guided filter or bilateral solver.
+    - Render bokeh like optics:
+      - work in linear light, not gamma-encoded YUV;
+      - set circle-of-confusion radius proportional to |1/z − 1/z_focus|, measured in diopters;
+      - use a disc kernel, with highlight boost so specular points bloom into discs;
+      - keep foreground and background as separate layers so blur does not leak across the subject edge;
+      - avoid a resolution seam between the quarter-resolution blur and the full-resolution subject;
+      - re-add sensor-matched grain to blurred areas.
+    - For focus stacking:
+      - lock exposure, ISO, white balance and AF;
+      - space the sweep in uniform diopter steps sized to depth of field, not a fixed 8 frames;
+      - align with ECC or a homography, not scale plus shift, because the camera is handheld;
+      - merge with Laplacian-pyramid fusion (Burt–Adelson, Zerene PMax style) or a smoothed depth-map selection. A sharpness^4 pixel weight produces halos and noise-driven speckle.
+
+    Raw material to start from: the most raw evidence, not summaries or synthetic tests.
+    - Real sweeps from the phone: every YUV frame, plus RAW_SENSOR DNGs where available.
+    - The full CaptureResult for each frame: LENS_FOCUS_DISTANCE, LENS_STATE, timestamp, exposure time, ISO, white-balance gains, SCALER_CROP_REGION, physical camera id, OIS samples.
+    - A full CameraCharacteristics dump for every camera id, including vendor tags and the camera id 5 depth outputs.
+    - Every intermediate buffer of both pipelines run on those frames: sharpness maps, alignment parameters, raw and filled depth, confidence, CoC map, final composite.
+    - The maker's BOKEH-extension output of the same scene.
+
+    Specific methods and tools:
+    - Camera2 metadata logging and DngCreator;
+    - an in-app debug-dump mode, and pulling the dumps over adb;
+    - an offline Python replay harness (numpy, OpenCV, scikit-image) that runs the same algorithms on the real captures;
+    - OpenCV findTransformECC or homography alignment;
+    - Laplacian-pyramid fusion;
+    - focus measures from the Pertuz et al. 2013 survey, for example sum-modified-Laplacian with a confidence threshold;
+    - guided filter (He et al.) or fast bilateral solver (Barron and Poole 2016) for depth refinement;
+    - Wadhwa et al. 2018, "Synthetic Depth-of-Field with a Single-Camera Mobile Phone", as the rendering reference;
+    - ML Kit Subject Segmentation or MediaPipe for the matte;
+    - the slanted-edge MTF50 measurement.
+
+    What proves the result is good, independent of the user and the agent:
+    - Macro: a ruler or slanted target shot at 45°. Measure the millimetres of in-focus span in the stack against the best single frame, and MTF50 at three depths.
+    - Portrait, part 1: the same scene shot with a real large-aperture lens, or with the maker's BOKEH extension. Compute boundary F-score of the in-focus region against a hand-labelled matte.
+    - Portrait, part 2: a blind, randomized A/B preference test by at least 5 people who did not build it.
+    - A frozen regression set of real captures, with metrics recorded in the repo, so later changes are judged against numbers.
+  </expert-brief>
+</context>
+
+<done>A plan at `docs/depth-macro-plan.md` covers six things:
+- a ranked list of root-cause hypotheses, each with the device evidence that would confirm or reject it;
+- a debug-dump capture spec;
+- an offline replay harness spec;
+- a committed algorithm redesign for each engine;
+- an evaluation protocol with numeric pass thresholds;
+- the exact captures the user must take on the phone.
+
+No other file in the repository is changed.</done>
+
+<research>
+  Look up before task 1, from the named source:
+  - Camera2 behavior of LENS_FOCUS_DISTANCE, LENS_STATE, LENS_INFO_FOCUS_DISTANCE_CALIBRATION and LENS_INFO_MINIMUM_FOCUS_DISTANCE, and how manual focus behaves on logical multi-camera devices (source: developer.android.com CaptureRequest, CaptureResult and CameraCharacteristics reference pages).
+  - Whether a third-party app can read MediaTek VSDOF depth from a public stream (DEPTH16 or DEPTH_POINT_CLOUD, REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT, dynamic depth). Find what is documented about the vendor depth keys (source: Android camera depth docs and AOSP camera metadata docs; treat forum posts as unconfirmed).
+  - The current stable version and API of ML Kit Subject Segmentation and MediaPipe image segmentation on Android, and whether each runs on-device without Play Services (source: developers.google.com ML Kit docs, ai.google.dev MediaPipe docs).
+  - The method sections of Wadhwa et al. 2018, Barron and Poole 2016 (bilateral solver), He et al. (guided filter), and Burt–Adelson Laplacian-pyramid fusion (source: the papers themselves, arXiv or the publisher).
+  Explore the codebase:
+  - Read `Bokeh.kt`, `FocusStack.kt`, `CameraController.kt` and `FrameOps.kt` in full. Read their existing JVM tests.
+  - Read the device probe output, wherever the repo stores it. Read the `android-raw-camera` skill under `.claude/`.
+  - Record exactly which camera id, AF mode, AE and AWB lock state, and request keys the macro and portrait sweeps send today.
+  Record pinned library versions with the date checked, and every source URL, in the plan before task 1.
+</research>
+
+<task id="1" name="audit-current-pipelines">
+  <description>Map what the code actually does, request by request and stage by stage, and list every point where real-device conditions differ from what the synthetic tests assume.</description>
+  <requirements>
+    - For each engine, give a stage table with columns: input, operation, resolution, color space (linear or gamma), and the file:line where it happens.
+    - Cover every synthetic-test assumption that the device can violate:
+      - static camera;
+      - exact focus distances;
+      - fixed exposure;
+      - textured scene;
+      - no OIS;
+      - correct physical lens.
+  </requirements>
+  <verification>
+    - Every stage row in the plan cites a file:line that exists. For a sample of rows, confirm with `grep -n` on the cited symbol.
+  </verification>
+</task>
+
+<task id="2" name="root-cause-hypotheses" depends-on="1">
+  <description>Rank the likely causes of "macro does not work" and "portrait looks unnatural". For each one, name the captured evidence that would confirm or reject it.</description>
+  <examples>
+    <example>
+      <input>Macro stack looks identical to a single frame.</input>
+      <output>Hypothesis H1: the lens did not move. Test: per-frame LENS_FOCUS_DISTANCE and LENS_STATE across the sweep, plus the physical camera id. Rejected if distances span ≥ 3 D with LENS_STATE stationary on every frame.</output>
+      <reasoning>If the lens never moved, no merge algorithm matters. This is the cheapest check and it gates everything after it, so it ranks first.</reasoning>
+    </example>
+    <example>
+      <input>Portrait background blur has holes and sharp patches on walls.</input>
+      <output>Hypothesis: the Laplacian focus measure has no signal in textureless regions, and the fill propagates wrong depth into them. Test: overlay the dumped confidence map on the final image. Confirmed if the sharp patches match low-confidence pixels.</output>
+      <reasoning>This is an algorithmic limit of depth-from-focus, not a tuning issue. It points to a different depth source, not to new thresholds.</reasoning>
+    </example>
+    <example>
+      <input>Glowing outline around the subject's hair.</input>
+      <output>Hypothesis: the quarter-resolution blur is composited without layer separation, so background blur leaks across the edge and the upsampling seam shows. Test: crop the edge region from the dumped CoC map and the composite.</output>
+      <reasoning>An edge halo can come from depth error or from rendering. The dumped CoC map tells them apart, and that decides which stage to fix.</reasoning>
+    </example>
+  </examples>
+  <requirements>
+    - At least 8 hypotheses across both engines. Each one includes:
+      - the symptom;
+      - the mechanism;
+      - the evidence field or buffer that tests it;
+      - the confirm or reject threshold.
+  </requirements>
+  <verification>
+    - Each hypothesis in the plan names a concrete metadata key or dump buffer from task 3.
+  </verification>
+</task>
+
+<task id="3" name="capture-and-replay-spec" depends-on="2">
+  <description>Specify the debug-dump capture mode and the offline replay harness that runs both pipelines on real captures.</description>
+  <requirements>
+    - Debug dump, per sweep:
+      - every YUV frame;
+      - a RAW DNG for every frame where the stream configuration allows it;
+      - per-frame CaptureResult as JSON;
+      - the CameraCharacteristics dump;
+      - all intermediate buffers from task 1;
+      - one directory per capture with a fixed naming scheme.
+    - Replay harness: in `tools/` or `prototype/`, it loads a dump and reproduces the Kotlin output within a stated tolerance before any algorithm change. Without that match, comparisons are meaningless.
+    - List the exact scenes the user must shoot:
+      - a 45° ruler for macro;
+      - a person against a textured background;
+      - a person against a plain wall;
+      - backlit point lights for bokeh discs.
+      Shoot each scene with our engine and with the BOKEH extension.
+  </requirements>
+  <verification>
+    - The plan states the dump directory layout, the replay command line, and the parity tolerance as numbers.
+  </verification>
+</task>
+
+<task id="4" name="redesign-both-engines" depends-on="3">
+  <description>Commit to an algorithm design for each engine, in stages that are each testable against the replay harness.</description>
+  <approach>
+    Commit before writing the plan:
+    - Portrait depth: subject segmentation matte for the subject boundary, plus VSDOF stereo depth if task research shows it is readable, otherwise depth-from-focus with a confidence map. Depth-from-focus is demoted to the background-gradient fallback only.
+    - Portrait rendering: linear light, CoC in diopters from the focus plane, disc kernel with highlight boost, layered foreground/subject/background composite, grain re-added.
+    - Macro: fix the capture first:
+      - main lens, verified by physical id;
+      - AF off, AE/AWB locked;
+      - uniform diopter steps, with step count from depth of field;
+      - frames taken only at LENS_STATE stationary.
+      Then align with ECC or a homography and merge with Laplacian-pyramid fusion.
+  </approach>
+  <requirements>
+    - Order stages so the capture-correctness fixes come first and are measured before any merge or render change.
+    - Give each stage its metric and its threshold from task 5.
+  </requirements>
+  <verification>
+    - Each stage in the plan maps to at least one hypothesis from task 2 and one metric from task 5.
+  </verification>
+</task>
+
+<task id="5" name="evaluation-protocol" depends-on="3">
+  <description>Define how the result is judged without relying on the user's or the agent's opinion.</description>
+  <requirements>
+    - Macro passes when both hold:
+      - the in-focus span on the 45° ruler is ≥ 3× the best single frame;
+      - MTF50 at near, middle and far points is within 15% of the single frame focused there.
+    - Portrait passes when both hold:
+      - boundary F-score against a hand-labelled matte is ≥ the BOKEH-extension output on the same scene;
+      - our output is preferred or tied in ≥ 60% of a blind randomized A/B against the BOKEH extension, with ≥ 5 raters who did not build it.
+    - A frozen regression set of real dumps, with recorded metrics, is checked into the repo. Synthetic JVM tests stay, but they no longer count as evidence of quality.
+  </requirements>
+  <verification>
+    - Every threshold in the plan is a number with a stated measurement procedure.
+  </verification>
+</task>
+
+<execution>
+  <strategy>Sequential: 1 → 2 → 3, then 4 and 5 can be drafted in parallel. Keep the task checklist and research findings in `TASKS.md` alongside the plan, because older turns get summarized. Check any subagent's file:line citations before accepting them.</strategy>
+  <constraints>
+    - Ground every hypothesis and design choice in device metadata or a dumped buffer. "Tune the threshold" without device evidence is the failure that produced the current state.
+    - Do not assume the vendor depth keys are usable. Mark VSDOF depth as conditional until research or a device dump shows a readable depth stream.
+    - Keep the BOKEH extension path working. It is both a shipping engine and the comparison baseline.
+  </constraints>
+  <out-of-scope>
+    - Changing app code in this run. This run produces a plan.
+    - Other modes: selfie, double exposure, zoom burst, coach, gallery.
+  </out-of-scope>
+  <stops>
+    - If a step needs no input, keep going. Put status in the same message as the next action.
+    - Stop only when blocked on the user: device captures and blind raters need them. Also stop before deleting data, force-pushing, or writing outside this repository.
+    - Do not end the turn by asking whether to continue.
+  </stops>
+  <escape>
+    If a requirement is infeasible, name it once in the plan and continue with every part that is not blocked. Do not invent a workaround. For example: no adb access, RAW unavailable in the sweep configuration, or segmentation needing Play Services.
+  </escape>
+</execution>
+
+<plan_mode_overlay>
+  Read, search and propose only. Write the plan to `docs/depth-macro-plan.md` and the checklist to `TASKS.md`. Exit plan mode when the plan is complete.
+</plan_mode_overlay>
+
+<check>
+  Before reporting completion:
+  - Run `git status --porcelain` and confirm only `docs/depth-macro-plan.md` and `TASKS.md` changed.
+  - Re-read both files. Confirm there are no placeholders, every threshold is numeric, and every file:line citation resolves.
+  - Report status for each original concern: macro, portrait blur, portrait depth, and the four expert questions. Mark each done / partial / skipped.
+  - Write the user-facing summary in Hebrew.
+  - Report:
+    Blocked on me: the exact captures and raters needed from the user.
+    Changed:
+    Found:
+    Unconfirmed: including where you looked, especially for VSDOF depth readability.
+</check>

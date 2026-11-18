@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.CompositionLocalProvider
 import app.obscura.camera.coach.CompositionCoach
+import androidx.compose.material.icons.outlined.Cameraswitch
 import app.obscura.camera.ui.Ob
 import app.obscura.camera.ui.Txt
 
@@ -94,34 +95,12 @@ fun CoachTarget(tip: CompositionCoach.Tip?) {
 fun FlipButton(selfie: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(modifier.size(40.dp).background(Color(0x66000000), CircleShape).border(0.6.dp, Ob.HairlineStrong, CircleShape).press(onClick),
         contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(22.dp)) {
-            // Two arcs chasing each other around a circle, each ending in an arrowhead that
-            // follows the arc's direction: the universal "switch camera".
-            val col = if (selfie) Ob.Brass else Ob.Ivory
-            val sw = 1.6.dp.toPx()
-            val inset = sw + 2.dp.toPx()
-            val r = size.minDimension / 2 - inset
-            val c = center
-            val arcSize = androidx.compose.ui.geometry.Size(r * 2, r * 2)
-            val topLeft = Offset(c.x - r, c.y - r)
-            val stroke = Stroke(sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-            val start = listOf(205f, 25f); val sweep = 130f
-            for (s0 in start) {
-                drawArc(col, s0, sweep, false, topLeft, arcSize, style = stroke)
-                // Arrowhead at the end of the arc, pointing along the (clockwise) tangent.
-                val end = Math.toRadians((s0 + sweep).toDouble())
-                val p = Offset(c.x + r * kotlin.math.cos(end).toFloat(), c.y + r * kotlin.math.sin(end).toFloat())
-                val tx = -kotlin.math.sin(end).toFloat(); val ty = kotlin.math.cos(end).toFloat()
-                val len = 4.5.dp.toPx()
-                for (side in listOf(-1f, 1f)) {
-                    val a = Math.toRadians((180.0 + side * 38.0))
-                    val ca = kotlin.math.cos(a).toFloat(); val sa = kotlin.math.sin(a).toFloat()
-                    val dx = tx * ca - ty * sa; val dy = tx * sa + ty * ca
-                    drawLine(col, p, Offset(p.x + dx * len, p.y + dy * len), sw, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                }
-            }
-            // A small lens dot in the middle.
-            drawCircle(col, radius = 1.8.dp.toPx(), center = c)
-        }
+        // Google's "camera switch" symbol: designed and hinted for small sizes.
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.graphics.vector.rememberVectorPainter(androidx.compose.material.icons.Icons.Outlined.Cameraswitch),
+            contentDescription = if (selfie) "מצלמה אחורית" else "סלפי",
+            colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(if (selfie) Ob.Brass else Ob.Ivory),
+            modifier = Modifier.size(22.dp),
+        )
     }
 }
