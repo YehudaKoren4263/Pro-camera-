@@ -922,7 +922,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         _state.update { s -> s.studio?.let { s.copy(studio = it.copy(saving = true)) } ?: s }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val full = decodeUpright(uri, 0) ?: error("decode")
+                // Our own photos (50 MP: 8160 px long side) stay full size; a huge image handed to us
+                // by another app is capped instead of exhausting memory.
+                val full = decodeUpright(uri, 8192) ?: error("decode")
                 applyLight(full, p)
                 val name = "OBS_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date()) + "_light"
                 val saved = MediaSaver.saveBitmap(getApplication(), full, _state.value.look, name, "Obscura light studio", lookApplied = true)

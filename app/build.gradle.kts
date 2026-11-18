@@ -15,8 +15,8 @@ android {
         applicationId = "app.obscura.camera"
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.3.0"
+        versionCode = 16
+        versionName = "1.3.1"
     }
 
     // Release signing is read from keystore.properties (never committed). Point OBSCURA_KEYSTORE

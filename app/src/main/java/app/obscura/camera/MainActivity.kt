@@ -73,7 +73,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (granted) vm.onPermission(true) else permission.launch(Manifest.permission.CAMERA)
 
         // Opened as an editor from a gallery app ("Edit with Obscura"): go to the light studio.
-        if (savedInstanceState == null && intent?.action == Intent.ACTION_EDIT) intent.data?.let(vm::editExternal)
+        if (savedInstanceState == null && intent?.action == Intent.ACTION_EDIT) intent.data?.let { uri ->
+            // Only images from another app's content provider (see IncomingImage).
+            val type = runCatching { contentResolver.getType(uri) }.getOrNull() ?: intent.type
+            if (IncomingImage.acceptable(uri.scheme, uri.authority, type, packageName)) vm.editExternal(uri)
+        }
 
         setContent {
             val state by vm.state.collectAsStateWithLifecycle()
