@@ -173,4 +173,46 @@ class DepthTest {
             chunk("IDAT", idat); chunk("IEND", ByteArray(0))
         }
     }
+
+    @Test fun fastAlignmentMatchesTheFullSearch() {
+        for (k in 1 until shots.size) {
+            val full = FocusStack.align(shots[0], shots[k]); val fast = FocusStack.alignFast(shots[0], shots[k])
+            val t = System.nanoTime(); repeat(5) { FocusStack.alignFast(shots[0], shots[k]) }; val tf = (System.nanoTime() - t) / 5e6
+            val t2 = System.nanoTime(); FocusStack.align(shots[0], shots[k]); val ts = (System.nanoTime() - t2) / 1e6
+            println("align $k: full (%.4f %.2f %.2f) %.0f ms · fast (%.4f %.2f %.2f) %.1f ms · true (%.4f %.2f %.2f)".format(
+                full.scale, full.dx, full.dy, ts, fast.scale, fast.dx, fast.dy, tf, 1f + 0.004f * k, 0.7f * k, -0.4f * k))
+            assertEquals(1f + 0.004f * k, fast.scale, 0.004f); assertEquals(0.7f * k, fast.dx, 0.6f); assertEquals(-0.4f * k, fast.dy, 0.6f)
+        }
+    }
+
+    @Test fun depthMapFusionIsSharpEverywhereAndFast() {
+        val k = 2
+        val fw = w * k; val fh = h * k
+        fun yuv(p: Plane) = YuvFrame(fw, fh, ByteArray(fw * fh) { i -> (p.bilinear(((i % fw) + 0.5f) / k - 0.5f, ((i / fw) + 0.5f) / k - 0.5f) * 255).roundToInt().coerceIn(0, 255).toByte() },
+            ByteArray(fw / 2 * (fh / 2)) { 128.toByte() }, ByteArray(fw / 2 * (fh / 2)) { 128.toByte() })
+        val frames = shots.map { yuv(it) }
+        val warps = shots.map { FocusStack.alignFast(shots[0], it) }
+        val (out, _) = FocusStack.fuse(frames, shots, warps, k)
+        fun energy(y: ByteArray, x0: Int, y0: Int, x1: Int, y1: Int): Double {
+            var e = 0.0
+            for (yy in y0 until y1) for (xx in x0 until x1) { val d = (y[yy * fw + xx + 1].toInt() and 0xFF) - (y[yy * fw + xx].toInt() and 0xFF); e += d * d }
+            return e
+        }
+        val subjR = intArrayOf(232, 172, 280, 212); val bgR = intArrayOf(20, 20, 90, 90)
+        val s = energy(out.y, subjR[0], subjR[1], subjR[2], subjR[3]) / frames.maxOf { energy(it.y, subjR[0], subjR[1], subjR[2], subjR[3]) }
+        val b = energy(out.y, bgR[0], bgR[1], bgR[2], bgR[3]) / frames.maxOf { energy(it.y, bgR[0], bgR[1], bgR[2], bgR[3]) }
+        println("dmap fusion: subject %.0f%%, background %.0f%% of the sharpest single frame".format(100 * s, 100 * b))
+        assertTrue(s > 0.85 && b > 0.85)
+    }
+
+    @Test fun fusionAtPhoneSizeIsQuick() {
+        // 7 frames of 4080x3072: the merge itself (alignment measured separately).
+        val fw = 4080; val fh = 3072; val k = 8
+        val rnd = Random(5)
+        val frames = List(7) { YuvFrame(fw, fh, ByteArray(fw * fh) { (rnd.nextInt(200) + 20).toByte() }, ByteArray(fw / 2 * (fh / 2)) { 128.toByte() }, ByteArray(fw / 2 * (fh / 2)) { 128.toByte() }) }
+        val small = frames.map { Plane.luma(it, k) }
+        val t0 = System.nanoTime(); val warps = small.map { FocusStack.alignFast(small[0], it) }; val ta = (System.nanoTime() - t0) / 1e6
+        val t1 = System.nanoTime(); FocusStack.fuse(frames, small, warps, k); val tm = (System.nanoTime() - t1) / 1e6
+        println("macro at phone size: align 7 frames %.0f ms, fuse %.0f ms".format(ta, tm))
+    }
 }

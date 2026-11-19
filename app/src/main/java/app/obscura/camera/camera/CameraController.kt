@@ -731,7 +731,8 @@ class CameraController(private val context: Context, private val listener: Liste
         val rows: List<Pair<String, String>>?,
     ) { var accepted = false; var index = -1 }
 
-    private class Sweep(val targets: List<Float>, val sink: (YuvFrame, Float, Int) -> Unit, val onDone: (BurstStats, List<SweepEntry>) -> Unit) {
+    private class Sweep(var targets: List<Float>, val sink: (YuvFrame, Float, Int) -> Unit, val onDone: (BurstStats, List<SweepEntry>) -> Unit,
+                        val plan: ((Float) -> List<Float>)? = null) {
         val log = ArrayList<SweepEntry>()
         val results = LinkedHashMap<Long, TotalCaptureResult>()
         val acceptedTs = HashMap<Long, Int>()
@@ -750,11 +751,16 @@ class CameraController(private val context: Context, private val listener: Liste
      * One frame at the autofocus distance, then one frame at each of [diopters] with the lens
      * settled there (exposure and colour locked). [sink] gets (frame, focus distance, index).
      */
-    fun focusSweep(diopters: List<Float>, sink: (YuvFrame, Float, Int) -> Unit, onDone: (BurstStats, List<SweepEntry>) -> Unit) = handler.post {
+    /**
+     * [plan], when given, chooses the focus targets from where autofocus landed (called once,
+     * after the first frame): a macro stack centred on the subject instead of the whole range.
+     */
+    fun focusSweep(diopters: List<Float>, sink: (YuvFrame, Float, Int) -> Unit, plan: ((Float) -> List<Float>)? = null,
+                   onDone: (BurstStats, List<SweepEntry>) -> Unit) = handler.post {
         if (!timeSession || session == null || yuvReader == null || recording != null || sweep != null) {
             listener.onError("המצלמה עוד לא מוכנה למצב הזה"); return@post
         }
-        val sw = Sweep(diopters, sink, onDone)
+        val sw = Sweep(diopters, sink, onDone, plan)
         sweep = sw; sweepFocus = null
         startRepeating()
         listener.onShutter()
@@ -793,8 +799,10 @@ class CameraController(private val context: Context, private val listener: Liste
         val target = sweepFocus
         val stationary = state == null || state == CaptureResult.LENS_STATE_STATIONARY
         val onTarget = target == null || abs(fd - target) < 0.12f + 0.06f * target
-        // Settled (or waited long enough): the next frame from this request on is the one.
-        if ((stationary && onTarget && sw.framesSinceSet >= 2) || sw.framesSinceSet > 12) {
+        // Settled (or waited long enough): the next frame from this request on is the one. The
+        // focus scale is uncalibrated on this phone, so a reported value off the request is not a
+        // reason to keep waiting: a stationary lens after a frame is (a small step moves within one).
+        if ((stationary && (onTarget || sw.framesSinceSet >= 2) && sw.framesSinceSet >= 1) || sw.framesSinceSet > 5) {
             sw.readyTs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
             sw.readyFocus = target ?: fd
         }
@@ -812,10 +820,13 @@ class CameraController(private val context: Context, private val listener: Liste
             processor.execute { try { sw.sink(frame, f, i) } catch (e: Throwable) { Log.e(TAG, "sweep sink", e) } }
         }
         sw.index++
+        if (sw.index == 0) sw.plan?.let { p -> sw.targets = p(f0OrReady(sw)) }
         if (sw.index >= sw.targets.size) { endSweep(sw); return }
         sweepFocus = sw.targets[sw.index]; sw.framesSinceSet = 0; sw.readyTs = null
         startRepeating()
     }
+
+    private fun f0OrReady(sw: Sweep) = sw.readyFocus
 
     private fun endSweep(sw: Sweep) {
         if (sweep !== sw) return

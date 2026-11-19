@@ -123,6 +123,109 @@ object FocusStack {
         return best
     }
 
+    /** Box-downsamples a plane by 4 (for the coarse alignment level). */
+    private fun quarter(p: Plane): Plane {
+        val w = p.w / 4; val h = p.h / 4
+        val out = Plane(w, h)
+        for (y in 0 until h) for (x in 0 until w) {
+            var s = 0f
+            for (yy in 0 until 4) for (xx in 0 until 4) s += p.v[(y * 4 + yy) * p.w + x * 4 + xx]
+            out.v[y * w + x] = s / 16f
+        }
+        return out
+    }
+
+    private fun cost(a: Plane, b: Plane, w: Warp, margin: Int, stride: Int): Float {
+        val cx = (a.w - 1) / 2f; val cy = (a.h - 1) / 2f
+        var s = 0f; var n = 0
+        var y = margin
+        while (y < a.h - margin) {
+            var x = margin
+            while (x < a.w - margin) { s += abs(a.v[y * a.w + x] - b.bilinear(w.x(x.toFloat(), cx), w.y(y.toFloat(), cy))); n++; x += stride }
+            y += stride
+        }
+        return s / max(1, n)
+    }
+
+    /**
+     * Same answer as [align], about twenty times cheaper: the search runs first on a quarter-size
+     * pyramid level (scale ±3 %, shift ±3 coarse pixels), then refines at full plane size only
+     * around that answer. Focus breathing and hand shake between two shots of a sweep are small,
+     * so nothing is lost by not searching the whole space at full size.
+     */
+    fun alignFast(ref: Plane, cur: Plane): Warp {
+        val a = Plane.boxBlur(ref, 2); val b = Plane.boxBlur(cur, 2)
+        val qa = quarter(a); val qb = quarter(b)
+        val qm = max(3, (qa.w * 0.06f).toInt())
+        var best = Warp.IDENTITY; var bc = Float.MAX_VALUE
+        for (si in -6..6) for (dy in -3..3) for (dx in -3..3) {
+            val w = Warp(1f + si * 0.005f, dx.toFloat(), dy.toFloat())
+            val c = cost(qa, qb, w, qm, 2); if (c < bc) { bc = c; best = w }
+        }
+        // Full plane size, coarse answer x4: whole pixels with a wider scale range (the quarter
+        // level resolves scale only to ~1 %), then quarter pixels around the winner.
+        val c0 = Warp(best.scale, best.dx * 4, best.dy * 4)
+        best = c0; bc = Float.MAX_VALUE
+        val m = max(10, (a.w * 0.06f).toInt())
+        for (si in -4..4) for (dy in -2..2) for (dx in -2..2) {
+            val w = Warp(c0.scale + si * 0.0025f, c0.dx + dx, c0.dy + dy)
+            val c = cost(a, b, w, m, 4); if (c < bc) { bc = c; best = w }
+        }
+        val c1 = best
+        for (si in -1..1) for (dy in -3..3) for (dx in -3..3) {
+            val w = Warp(c1.scale + si * 0.00125f, c1.dx + dx * 0.25f, c1.dy + dy * 0.25f)
+            val c = cost(a, b, w, m, 3); if (c < bc) { bc = c; best = w }
+        }
+        return best
+    }
+
+    /**
+     * Macro focus stack, depth-map method (as Zerene's DMap): for every pixel, which plane is
+     * sharpest (sub-plane, edge-aware filled where there is no texture), then each output pixel
+     * blends the two planes either side of that index. Unlike sharpness^k weights it never mixes
+     * blurred planes into a sharp area (no veil, no halo of noise speckle), and it costs two
+     * samples per pixel.
+     *
+     * [frames] full size, in sweep order; [small] their planes at 1/[k]; returns the stack and
+     * the per-pixel plane index (for diagnostics).
+     */
+    fun fuse(frames: List<YuvFrame>, small: List<Plane>, warps: List<Warp>, k: Int): Pair<YuvFrame, Plane> {
+        val n = frames.size
+        val ref = small[0]
+        val sharp = small.indices.map { warp(sharpness(it.let { i -> small[i] }), warps[it]) }
+        val idx = Plane.boxBlur(depth(sharp, List(n) { it.toFloat() }, ref).depth, 1)
+        val w = frames[0].w; val h = frames[0].h
+        val fw = warps.map { it.scaled(k.toFloat()) }
+        val cx = (w - 1) / 2f; val cy = (h - 1) / 2f
+        val outY = ByteArray(w * h)
+        val cw = w / 2; val ch = h / 2
+        val outU = ByteArray(cw * ch); val outV = ByteArray(cw * ch)
+        fun sampleY(f: YuvFrame, wp: Warp, x: Int, y: Int): Float {
+            val fx = wp.x(x.toFloat(), cx).coerceIn(0f, w - 1f); val fy = wp.y(y.toFloat(), cy).coerceIn(0f, h - 1f)
+            val x0 = fx.toInt(); val y0 = fy.toInt(); val x1 = min(w - 1, x0 + 1); val y1 = min(h - 1, y0 + 1)
+            val ax = fx - x0; val ay = fy - y0
+            fun p(xx: Int, yy: Int) = (f.y[yy * w + xx].toInt() and 0xFF).toFloat()
+            return (p(x0, y0) * (1 - ax) + p(x1, y0) * ax) * (1 - ay) + (p(x0, y1) * (1 - ax) + p(x1, y1) * ax) * ay
+        }
+        java.util.stream.IntStream.range(0, h).parallel().forEach { y ->
+            for (x in 0 until w) {
+                val t = idx.bilinear((x + 0.5f) / k - 0.5f, (y + 0.5f) / k - 0.5f).coerceIn(0f, n - 1f)
+                val i0 = t.toInt().coerceAtMost(n - 1); val i1 = min(n - 1, i0 + 1); val a = t - i0
+                val v = if (i1 == i0 || a < 0.02f) sampleY(frames[i0], fw[i0], x, y)
+                    else sampleY(frames[i0], fw[i0], x, y) * (1 - a) + sampleY(frames[i1], fw[i1], x, y) * a
+                outY[y * w + x] = (v + 0.5f).toInt().coerceIn(0, 255).toByte()
+                if ((x and 1) == 0 && (y and 1) == 0) {
+                    // Chroma from the nearest plane: colour barely changes with focus.
+                    val f = frames[if (a < 0.5f) i0 else i1]; val wp = fw[if (a < 0.5f) i0 else i1]
+                    val sx = (wp.x(x.toFloat(), cx) / 2).toInt().coerceIn(0, cw - 1); val sy = (wp.y(y.toFloat(), cy) / 2).toInt().coerceIn(0, ch - 1)
+                    val ci = (y / 2) * cw + x / 2
+                    outU[ci] = f.u[sy * cw + sx]; outV[ci] = f.v[sy * cw + sx]
+                }
+            }
+        }
+        return YuvFrame(w, h, outY, outU, outV) to idx
+    }
+
     /** Focus measure: local energy of the Laplacian, smoothed. Bigger = sharper. */
     fun sharpness(p: Plane, smooth: Int = 3): Plane {
         val w = p.w; val h = p.h

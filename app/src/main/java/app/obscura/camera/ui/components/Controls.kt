@@ -321,10 +321,14 @@ fun TimePanel(s: CameraUiState, a: CameraActions) {
                 else ScrollRow(spacing = 6.dp) { app.obscura.camera.depth.BokehShape.entries.forEach { sh -> Chip(sh.label, s.bokehShape == sh) { a.selectBokehShape(sh) } } }
             }
             Mode.MACRO -> {
-                PanelHeader("מאקרו", "עד 10 ס״מ. כמה מישורי פוקוס מתמזגים לתמונה חדה מקדימה ועד אחורה")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Txt("מישורים", Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.5.sp)); Spacer(Modifier.width(10.dp))
-                    Segmented(listOf(6, 10, 14).map { ltr("$it") to it }, s.macroPlanes) { a.setMacroPlanes(it) }
+                if (s.macroTooClose) PanelHeader("קרוב מדי", "העדשה לא מתמקדת מתחת ל-~10 ס״מ. התרחק מעט, והגדל עם ×2 או ×3") {}
+                else PanelHeader("מאקרו", "הכי קרוב שהעדשה מתמקדת: ~10 ס״מ. כמה מישורים סביב הנושא מתמזגים לחדות מלאה")
+                ScrollRow {
+                    Txt("הגדלה", Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.5.sp)); Spacer(Modifier.width(8.dp))
+                    Segmented(listOf(ltr("×1") to 1f, ltr("×2") to 2f, ltr("×3") to 3f), listOf(1f, 2f, 3f).minByOrNull { kotlin.math.abs(it - s.zoom) } ?: 1f) { a.setMacroZoom(it) }
+                    Spacer(Modifier.width(12.dp))
+                    Txt("מישורים", Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.5.sp)); Spacer(Modifier.width(8.dp))
+                    Segmented(listOf(5, 7, 9).map { ltr("$it") to it }, s.macroPlanes) { a.setMacroPlanes(it) }
                 }
             }
             else -> {
@@ -381,7 +385,7 @@ private fun ApertureDial(s: CameraUiState, a: CameraActions) {
 @Composable
 fun PanelHeader(title: String, hint: String, trailing: @Composable () -> Unit = {}) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Txt(title, Ob.LabelHe.copy(color = Ob.Ivory, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold))
+        Txt(title, Ob.LabelHe.copy(color = if (title == "קרוב מדי") Ob.Signal else Ob.Ivory, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold))
         Box(Modifier.padding(horizontal = 8.dp).size(3.dp).background(Ob.Smoke, CircleShape))
         Txt(hint, Ob.LabelHe.copy(color = Ob.Ash, fontSize = 11.sp, fontWeight = FontWeight.Normal), Modifier.weight(1f))
         trailing()

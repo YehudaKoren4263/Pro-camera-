@@ -102,6 +102,30 @@ object Replay {
             for ((name, p) in listOf("depth_raw" to dm.raw, "confidence" to dm.confidence, "depth" to dm.depth)) {
                 File(dir, "$name.plane.z").takeIf { it.exists() }?.let { f -> val m = maxDiff(p, DiagFiles.readPlane(f)); if (m > 1e-5f) parity = false; sb.appendLine("- $name max diff $m") }
             }
+        } else if (params["merge"] == "fuse") {
+            // Macro 1.4+: planes stored near to far, aligned to the autofocus plane, depth-map fusion.
+            order = focus.indices.toList()
+            val notes = File(dir, "notes.txt").takeIf { it.exists() }?.readText().orEmpty()
+            val refIdx = Regex("ref=(\\d+)").find(notes)?.groupValues?.get(1)?.toInt() ?: 0
+            val warps = small.map { FocusStack.alignFast(small[refIdx], it) }
+            sharpPlanes = small.mapIndexed { i, p -> FocusStack.warp(FocusStack.sharpness(p), warps[i]) }
+            warps.forEachIndexed { i, w ->
+                val d = dumpedWarps.firstOrNull { it["index"]!!.toInt() == i }
+                val same = d != null && d["scale"]!!.toFloat() == w.scale && d["dx"]!!.toFloat() == w.dx && d["dy"]!!.toFloat() == w.dy
+                if (!same) parity = false
+                sb.appendLine("- warp $i ${if (same) "✓" else "✗"} (${w.scale}, ${w.dx}, ${w.dy})")
+            }
+            val full = frames.map { File(dir, "frame_${it["index"]}.yuv.z") }
+            if (full.all { it.exists() }) {
+                val k = (params["k"] ?: "8").toInt()
+                val (out, idx) = FocusStack.fuse(full.map { DiagFiles.readYuv(it) }, small, warps, k)
+                File(dir, "focus_index.plane.z").takeIf { it.exists() }?.let { f -> val m = maxDiff(idx, DiagFiles.readPlane(f)); if (m > 1e-5f) parity = false; sb.appendLine("- focus index max diff $m") }
+                File(dir, "merged.yuv.z").takeIf { it.exists() }?.let { f ->
+                    val phone = DiagFiles.readYuv(f); var md = 0
+                    for (i in out.y.indices) md = max(md, abs((out.y[i].toInt() and 0xFF) - (phone.y[i].toInt() and 0xFF)))
+                    if (md > 0) parity = false; sb.appendLine("- merged luma max diff $md")
+                }
+            } else sb.appendLine("- fusion not replayed: full frames not in the dump")
         } else {
             order = focus.indices.toList()
             val warps = small.map { FocusStack.align(ref, it) }
@@ -166,7 +190,11 @@ object Replay {
             sb.appendLine("- **H7 depth fails on smooth surfaces**: ${(100f * low / conf.v.size).roundToInt()}% of pixels have confidence < 0.15 (see vis_confidence.png) → ${verdict(low > conf.v.size * 0.3f)}")
         }
         // H8: alignment residual (is scale+shift enough?).
-        val warps = (if (mode == "portrait") order.map { FocusStack.align(ref, small[it]) } else small.map { FocusStack.align(ref, it) })
+        val warps = when {
+            mode == "portrait" -> order.map { FocusStack.align(ref, small[it]) }
+            params["merge"] == "fuse" -> small.map { FocusStack.alignFast(small[0], it) }
+            else -> small.map { FocusStack.align(ref, it) }
+        }
         val residual = (if (mode == "portrait") order.map { small[it] } else small).zip(warps).map { (p, w) -> residual(ref, p, w) }
         sb.appendLine("- **H8 scale+shift alignment is not enough**: residual after alignment ${residual.joinToString(" ") { "%.4f".format(it) }} (blurred mean abs diff) → ${verdict((residual.maxOrNull() ?: 0f) > 0.02f)}")
         // H9: motion during the sweep.

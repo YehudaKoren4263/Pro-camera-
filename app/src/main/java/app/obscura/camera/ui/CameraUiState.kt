@@ -122,7 +122,9 @@ data class CameraUiState(
     /** Skin retouch 0..1 for portraits and selfies, live in the viewfinder and in the photo. */
     val retouch: Float = 0.35f,
     /** Macro: focus planes per stack. */
-    val macroPlanes: Int = 10,
+    val macroPlanes: Int = 7,
+    /** Macro: the subject is closer than the lens can focus (live warning). */
+    val macroTooClose: Boolean = false,
     /** Pro sheet: hold to see the scene with every setting on automatic. */
     val comparing: Boolean = false,
     /** Diagnostic recording of portrait/macro sweeps (frames, metadata, intermediates -> zip). */
@@ -176,6 +178,7 @@ interface CameraActions {
     fun openPro() {}
     fun selectBokehShape(s: app.obscura.camera.depth.BokehShape) {}
     fun setMacroPlanes(n: Int) {}
+    fun setMacroZoom(z: Float) {}
     fun setPortraitLive(live: Boolean) {}
     fun setAperture(f: Float) {}
     fun setRetouch(v: Float) {}

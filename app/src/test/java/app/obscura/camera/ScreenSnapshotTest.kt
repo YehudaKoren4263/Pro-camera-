@@ -254,4 +254,6 @@ class ScreenSnapshotTest {
 
     @Test fun portraitLiveAperture() = shot(base.copy(frontLens = front, mode = Mode.PORTRAIT, bokehLive = true, bokehStrength = true, aperture = 1.4f,
         zoom = 2f, rawActive = false, jpegMp = 12.6f))
+
+    @Test fun macroTooClose() = shot(base.copy(frontLens = front, mode = Mode.MACRO, macroTooClose = true, zoom = 2f, rawActive = false, jpegMp = 12.6f))
 }

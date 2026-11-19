@@ -569,47 +569,77 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         if (minD <= 0f) { notify("לעדשה הזו אין פוקוס. בחר עדשה אחרת"); return }
         val k = 8
         val n = s.macroPlanes
-        // From the closest focus out to a third of it: a few centimetres of depth, all sharp.
-        val targets = List(n) { i -> minD * (1f - 0.7f * i / (n - 1f)) }
-        var ref: app.obscura.camera.depth.Plane? = null
-        var merger: app.obscura.camera.depth.FocusStack.Merger? = null
-        var oom = false
-        _state.update { it.copy(capturing = true, busyText = "סורק $n מישורי פוקוס", progress = 0f) }
-        val rec = beginDiag("macro", s, listOf("targets" to targets.joinToString(","), "min_focus_d" to "$minD", "k" to "$k", "planes" to "$n"))
-        val warpRows = ArrayList<List<Any>>()
-        controller.focusSweep(targets, sink = { frame, d, i ->
-            if (oom) return@focusSweep
-            try {
-                val small = app.obscura.camera.depth.Plane.luma(frame, k)
-                val r = ref ?: small.also { ref = it }
-                val m = merger ?: app.obscura.camera.depth.FocusStack.Merger(frame.w, frame.h, k).also { merger = it }
-                val wp = app.obscura.camera.depth.FocusStack.align(r, small)
-                val sh = app.obscura.camera.depth.FocusStack.warp(app.obscura.camera.depth.FocusStack.sharpness(small), wp)
-                rec?.let { rc -> runCatching { rc.frame(i, d, frame, small); rc.plane("sharp_$i", sh); warpRows += listOf(i, wp.scale, wp.dx, wp.dy) } }
-                m.add(frame, sh, wp)
-                _state.update { it.copy(progress = (i + 1f) / (n + 1)) }
-            } catch (e: OutOfMemoryError) { oom = true; merger = null }
-        }) { stats, log ->
-            rec?.let { rc -> rc.sweepLog(log); rc.warps(warpRows); rc.note("orientation=${stats.orientation} oom=$oom") }
-            val m = merger
-            if (oom || m == null || m.frames < 3) {
-                rec?.let { rc -> rc.note("FAILED: frames=${m?.frames ?: 0}"); finishDiag(rc) }
-                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
-                notify(if (oom) "אין מספיק זיכרון. נסה פחות מישורים" else "הסריקה לא הושלמה. נסה שוב"); return@focusSweep
-            }
-            _state.update { it.copy(busyText = "ממזג ${m.frames} מישורים", progress = null) }
-            val look = _state.value.look
-            val merged = m.result()
-            rec?.let { rc ->
-                if (rc.fullFramesEnabled) rc.yuv("merged", merged)
-                val vb = YuvImages.toBitmap(merged, stats.orientation, null, step = 8)
-                val vp = IntArray(vb.width * vb.height).also { vb.getPixels(it, 0, vb.width, 0, 0, vb.width, vb.height) }
-                rc.png("vis_merged", vp, vb.width, vb.height); vb.recycle()
-                finishDiag(rc)
-            }
-            saveComputed("מאקרו", "Obscura macro · focus stack · ${m.frames} planes") { YuvImages.toBitmap(merged, stats.orientation, look) }
-            merger = null
+        // Planes centred on where autofocus found the subject, a small step apart (the stack only
+        // needs the subject's own depth, not the lens's whole range). The nearest plane may ask a
+        // little past the specified closest focus: if the lens can go there, we take it.
+        val step = 0.05f * minD
+        val plan: (Float) -> List<Float> = { af ->
+            val c = af.coerceIn(step, minD)
+            List(n - 1) { i -> c + (i - (n - 2) / 2f) * step }.map { it.coerceIn(0f, minD * 1.12f) }.distinct()
         }
+        val frames = ArrayList<YuvFrame>(n)
+        val focuses = ArrayList<Float>(n)
+        _state.update { it.copy(capturing = true, busyText = "סורק $n מישורי פוקוס · לא לזוז", progress = 0f) }
+        val rec = beginDiag("macro", s, listOf("min_focus_d" to "$minD", "k" to "$k", "planes" to "$n", "merge" to "fuse", "step" to "$step"))
+        val t0 = System.currentTimeMillis()
+        controller.focusSweep(emptyList(), sink = { frame, d, i ->
+            synchronized(frames) { frames += frame; focuses += d }
+            _state.update { it.copy(progress = (i + 1f) / (n + 1)) }
+        }, plan = plan) { stats, log ->
+            val tCapture = System.currentTimeMillis() - t0
+            if (frames.size < 3) {
+                rec?.let { r -> r.sweepLog(log); r.note("FAILED: frames=${frames.size}"); finishDiag(r) }
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify("הסריקה לא הושלמה. נסה שוב, ביציבות"); return@focusSweep
+            }
+            try {
+                _state.update { it.copy(busyText = "ממזג ${frames.size} מישורים", progress = null) }
+                // Order by focus (near to far), then align every plane to the autofocus frame, in parallel.
+                val order = frames.indices.sortedByDescending { focuses[it] }
+                val sorted = order.map { frames[it] }
+                val small = sorted.map { app.obscura.camera.depth.Plane.luma(it, k) }
+                val refIdx = order.indexOf(0)
+                val warps = java.util.stream.IntStream.range(0, small.size).parallel()
+                    .mapToObj { app.obscura.camera.depth.FocusStack.alignFast(small[refIdx], small[it]) }.toArray().map { it as app.obscura.camera.depth.Warp }
+                val (merged, index) = app.obscura.camera.depth.FocusStack.fuse(sorted, small, warps, k)
+                val tTotal = System.currentTimeMillis() - t0
+                rec?.let { r ->
+                    r.sweepLog(log)
+                    sorted.forEachIndexed { j, f -> runCatching { r.frame(j, focuses[order[j]], f, small[j]) } }
+                    r.warps(warps.mapIndexed { j, w -> listOf(j, w.scale, w.dx, w.dy) })
+                    r.plane("focus_index", index); r.pngPlane("vis_focus_index", index, 0f, sorted.size - 1f)
+                    if (r.fullFramesEnabled) r.yuv("merged", merged)
+                    r.note("orientation=${stats.orientation} ref=$refIdx capture_ms=$tCapture total_ms=$tTotal focuses=${order.joinToString(",") { "%.3f".format(focuses[it]) }}")
+                    finishDiag(r)
+                }
+                frames.clear()
+                val look = _state.value.look
+                saveComputed("מאקרו", "Obscura macro · focus stack · ${sorted.size} planes · ${tTotal} ms") { YuvImages.toBitmap(merged, stats.orientation, look) }
+            } catch (e: OutOfMemoryError) {
+                frames.clear()
+                _state.update { it.copy(capturing = false, busyText = null, progress = null) }
+                notify("אין מספיק זיכרון. נסה פחות מישורים")
+            }
+        }
+    }
+
+    /** Macro magnification: a centred crop on the closest-focusing lens (never a lens switch). */
+    override fun setMacroZoom(z: Float) {
+        _state.update { it.copy(zoom = z) }
+        controller.setZoom(z)
+    }
+
+    /** Live: the lens is at its closest focus and still not sharp, so the subject is too close. */
+    private var tooCloseSince = 0L
+    private fun watchMacroDistance(r: LiveReadout) {
+        val s = _state.value
+        if (s.mode != Mode.MACRO || s.capturing) { if (s.macroTooClose) _state.update { it.copy(macroTooClose = false) }; return }
+        val minD = s.activeInfo?.minFocusDiopters ?: 0f
+        val atLimit = minD > 0f && (r.focusDiopters ?: 0f) >= minD * 0.97f && !r.afLocked
+        val now = System.currentTimeMillis()
+        if (!atLimit) { tooCloseSince = 0L; if (s.macroTooClose) _state.update { it.copy(macroTooClose = false) }; return }
+        if (tooCloseSince == 0L) tooCloseSince = now
+        if (now - tooCloseSince > 800 && !s.macroTooClose) _state.update { it.copy(macroTooClose = true) }
     }
 
     // ---- Diagnostics ---------------------------------------------------------------------------
@@ -1222,7 +1252,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions, 
         }
     }
 
-    override fun onReadout(readout: LiveReadout) = _state.update { it.copy(live = readout) }
+    override fun onReadout(readout: LiveReadout) { _state.update { it.copy(live = readout) }; watchMacroDistance(readout) }
     override fun onShutter() = _state.update { it.copy(shutterTick = it.shutterTick + 1) }
 
     override fun onShotSaved(jpeg: Uri?, dng: Uri?, thumbnail: Bitmap?) {
